@@ -180,6 +180,20 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 	REGISTER_QMODEM_FEED
 	FIX_QMODEM_VERSION
 
+	# RM502Q-AE (fw A13A04M4G) 兼容补丁：quectel-CM 的 WDS 状态查询
+	# (Get Packet Service Status) 在该模组上永不应答，而原实现无限等待，
+	# 主循环在发起数据呼叫前就挂死。补丁给该查询加 10s 超时，超时后
+	# 自动进入 Start Network 流程。补丁丢失/失败时中止构建，避免产出坏固件。
+	QMODEM_PATCH="$GITHUB_WORKSPACE/Scripts/patches/qmodem/0001-quectel-cm-wds-query-timeout.patch"
+	if [ ! -f "$QMODEM_PATCH" ]; then
+		echo "::error title=QModem patch missing::未找到 quectel-CM 超时补丁，构建中止"
+		return 1
+	fi
+	( cd ../QModem && patch -p1 -N < "$QMODEM_PATCH" ) || {
+		echo "::error title=QModem patch failed::quectel-CM 超时补丁应用失败，构建中止"
+		return 1
+	}
+
 	# 通用 QModem 管理界面（依赖 qmodem 核心），Modem Pro 配置不编入
 	UPDATE_PACKAGE "luci-app-qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
 else

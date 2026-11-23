@@ -1,0 +1,17 @@
+diff --git a/application/quectel_CM_5G_M/src/QMIThread.c b/application/quectel_CM_5G_M/src/QMIThread.c
+index 9b4011a..d67daa9 100644
+--- a/application/quectel_CM_5G_M/src/QMIThread.c
++++ b/application/quectel_CM_5G_M/src/QMIThread.c
+@@ -1855,7 +1855,11 @@ static int requestQueryDataCall(UCHAR  *pConnectionStatus, int curIpFamily) {
+     UCHAR QMIType = (curIpFamily == IpFamilyV4) ? QMUX_TYPE_WDS : QMUX_TYPE_WDS_IPV6;
+ 
+     pRequest = ComposeQMUXMsg(QMIType, QMIWDS_GET_PKT_SRVC_STATUS_REQ, NULL, NULL);
+-    err = QmiThreadSendQMI(pRequest, &pResponse);
++    /* RM502Q-AE (fw A13A04M4G) never answers this WDS query; plain
++     * QmiThreadSendQMI() waits forever and wedges the main loop before
++     * the data call is started. Use the timeout variant so a
++     * non-responsive modem falls through to requestSetupDataCall(). */
++    err = QmiThreadSendQMITimeout(pRequest, &pResponse, 10 * 1000, __func__);
+     qmi_rsp_check_and_return();
+ 
+     *pConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
