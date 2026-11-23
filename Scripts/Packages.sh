@@ -180,10 +180,14 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 	REGISTER_QMODEM_FEED
 	FIX_QMODEM_VERSION
 
-	# RM502Q-AE (fw A13A04M4G) 兼容补丁：quectel-CM 的 WDS 状态查询
-	# (Get Packet Service Status) 在该模组上永不应答，而原实现无限等待，
-	# 主循环在发起数据呼叫前就挂死。补丁给该查询加 10s 超时，超时后
-	# 自动进入 Start Network 流程。补丁丢失/失败时中止构建，避免产出坏固件。
+	# RM502Q-AE (fw A13A04M4G) + 主线通用 qmi_wwan 完整兼容补丁：
+	# 1. main.c：SIG_EVENT_START 拨号拿到 IP 后立刻调用 usbnet_link_change()；
+	#    SIG_EVENT_CHECK 中 WDS 状态查询超时时改用 check_ipv4_address()/GetIPAddress
+	#    保活，彻底解决“拨号成功 → 查询超时 → 误判掉线 → 清空网卡重拨”死循环；
+	# 2. udhcpc.c / qmap_bridge_mode.c：在 -d/-E（no_dhcp/managed_ipv4）模式下
+	#    也会自动开启主线 qmi_wwan 的 /sys/class/net/<if>/qmi/raw_ip，并修正 rawip 拼写；
+	# 3. QMIThread.c：保留 WDS 查询 10s 超时，修复 requestGetProfile() 空指针崩溃隐患。
+	# 补丁丢失/失败时中止构建，避免产出坏固件。
 	QMODEM_PATCH="$GITHUB_WORKSPACE/Scripts/patches/qmodem/0001-quectel-cm-wds-query-timeout.patch"
 	if [ ! -f "$QMODEM_PATCH" ]; then
 		echo "::error title=QModem patch missing::未找到 quectel-CM 超时补丁，构建中止"

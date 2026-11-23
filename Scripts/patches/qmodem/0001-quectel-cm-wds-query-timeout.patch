@@ -1,17 +1,203 @@
 diff --git a/application/quectel_CM_5G_M/src/QMIThread.c b/application/quectel_CM_5G_M/src/QMIThread.c
-index 9b4011a..d67daa9 100644
+index 9b4011a..b479781 100644
 --- a/application/quectel_CM_5G_M/src/QMIThread.c
 +++ b/application/quectel_CM_5G_M/src/QMIThread.c
-@@ -1855,7 +1855,11 @@ static int requestQueryDataCall(UCHAR  *pConnectionStatus, int curIpFamily) {
+@@ -1855,7 +1855,10 @@ static int requestQueryDataCall(UCHAR  *pConnectionStatus, int curIpFamily) {
      UCHAR QMIType = (curIpFamily == IpFamilyV4) ? QMUX_TYPE_WDS : QMUX_TYPE_WDS_IPV6;
  
      pRequest = ComposeQMUXMsg(QMIType, QMIWDS_GET_PKT_SRVC_STATUS_REQ, NULL, NULL);
 -    err = QmiThreadSendQMI(pRequest, &pResponse);
-+    /* RM502Q-AE (fw A13A04M4G) never answers this WDS query; plain
-+     * QmiThreadSendQMI() waits forever and wedges the main loop before
-+     * the data call is started. Use the timeout variant so a
-+     * non-responsive modem falls through to requestSetupDataCall(). */
++    /* RM502Q-AE (fw A13A04M4G) never answers QMIWDS_GET_PKT_SRVC_STATUS_REQ;
++     * use a 10s timeout instead of the default 30s so the main loop can
++     * detect the unsupported query and fall back to runtime IP checks. */
 +    err = QmiThreadSendQMITimeout(pRequest, &pResponse, 10 * 1000, __func__);
      qmi_rsp_check_and_return();
  
      *pConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
+@@ -2234,10 +2237,14 @@ static int requestGetProfile(PROFILE_T *profile) {
+ 
+ _re_check:
+     pRequest = ComposeQMUXMsg(QMUX_TYPE_WDS, QMIWDS_GET_PROFILE_LIST_REQ, WdsGetProfileListReqSend, profile);
+-    err = QmiThreadSendQMI(pRequest, &pResponse);s_pResponse = malloc(le16_to_cpu(pResponse->QMIHdr.Length) + 1);
++    err = QmiThreadSendQMI(pRequest, &pResponse);
+     qmi_rsp_check_and_return();
+     
+     pProfileList = (PQMIWDS_PROFILELIST)GetTLV(&pResponse->MUXMsg.QMUXMsgHdr, 0x01);
++    if (!pProfileList) {
++        free(pResponse);
++        return -1;
++    }
+     uint8 profile_indexs[42] = {0};
+     uint8 profile_num = pProfileList->ProfileList[0];
+     if(profile_num >= 1)
+diff --git a/application/quectel_CM_5G_M/src/main.c b/application/quectel_CM_5G_M/src/main.c
+index e29a036..099aadd 100644
+--- a/application/quectel_CM_5G_M/src/main.c
++++ b/application/quectel_CM_5G_M/src/main.c
+@@ -270,7 +270,9 @@ static int qmi_main(PROFILE_T *profile)
+ #endif
+     UCHAR PSAttachedState = 0;
+     UCHAR  IPv4ConnectionStatus = QWDS_PKT_DATA_UNKNOW;
+-    UCHAR  IPv6ConnectionStatus = QWDS_PKT_DATA_UNKNOW; 
++    UCHAR  IPv6ConnectionStatus = QWDS_PKT_DATA_UNKNOW;
++    int wds_query_v4_unsupported = 0;
++    int wds_query_v6_unsupported = 0;
+     unsigned SetupCallFail = 0;
+     unsigned long SetupCallAllowTime = clock_msec();
+ #ifdef REBOOT_SIM_CARD_WHEN_LONG_TIME_NO_PS
+@@ -511,6 +513,15 @@ static int qmi_main(PROFILE_T *profile)
+                                 }
+                             }
+                                 
++                            if (IPv4ConnectionStatus == QWDS_PKT_DATA_CONNECTED || IPv6ConnectionStatus == QWDS_PKT_DATA_CONNECTED) {
++                                int link = 0;
++                                if (IPv4ConnectionStatus == QWDS_PKT_DATA_CONNECTED)
++                                    link |= (1<<IpFamilyV4);
++                                if (IPv6ConnectionStatus == QWDS_PKT_DATA_CONNECTED)
++                                    link |= (1<<IpFamilyV6);
++                                usbnet_link_change(link, profile);
++                            }
++
+                             if ((profile->enable_ipv4 && IPv4ConnectionStatus ==  QWDS_PKT_DATA_DISCONNECTED)
+                                     || (profile->enable_ipv6 && IPv6ConnectionStatus ==  QWDS_PKT_DATA_DISCONNECTED)) {
+                                 const unsigned allow_time[] = {5, 10, 20, 40, 60};
+@@ -565,19 +576,38 @@ static int qmi_main(PROFILE_T *profile)
+                             }
+ #endif
+ 
+-                            if (profile->enable_ipv4 && IPv4ConnectionStatus != QWDS_PKT_DATA_DISCONNECTED
+-                                && !request_ops->requestQueryDataCall(&IPv4ConnectionStatus, IpFamilyV4))
+-                            {
+-                                if (QWDS_PKT_DATA_CONNECTED == IPv4ConnectionStatus && profile->ipv4.Address == 0) {
+-                                    //killall -9 quectel-CM for MBIM and ATC call
+-                                    qmierr = request_ops->requestGetIPAddress(profile, IpFamilyV4);
+-                                    if (qmierr)
+-                                        IPv4ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                            if (profile->enable_ipv4 && IPv4ConnectionStatus != QWDS_PKT_DATA_DISCONNECTED) {
++                                int v4_query_ok = 0;
++
++                                if (!wds_query_v4_unsupported) {
++                                    qmierr = request_ops->requestQueryDataCall(&IPv4ConnectionStatus, IpFamilyV4);
++                                    if (qmierr == 0) {
++                                        v4_query_ok = 1;
++                                    } else if (qmierr == ETIMEDOUT) {
++                                        dbg_time("IPv4 requestQueryDataCall timed out; falling back to runtime IP check");
++                                        wds_query_v4_unsupported = 1;
++                                    }
+                                 }
+ 
+-                                //local ip is different with remote ip
+-                                if (QWDS_PKT_DATA_CONNECTED == IPv4ConnectionStatus && check_ipv4_address(profile) == 0) {
+-                                    request_ops->requestDeactivateDefaultPDP(profile, IpFamilyV4);
++                                if (v4_query_ok) {
++                                    if (QWDS_PKT_DATA_CONNECTED == IPv4ConnectionStatus && profile->ipv4.Address == 0) {
++                                        //killall -9 quectel-CM for MBIM and ATC call
++                                        qmierr = request_ops->requestGetIPAddress(profile, IpFamilyV4);
++                                        if (qmierr)
++                                            IPv4ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                                    }
++
++                                    //local ip is different with remote ip
++                                    if (QWDS_PKT_DATA_CONNECTED == IPv4ConnectionStatus && check_ipv4_address(profile) == 0) {
++                                        request_ops->requestDeactivateDefaultPDP(profile, IpFamilyV4);
++                                        IPv4ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                                    }
++                                } else if (wds_query_v4_unsupported && QWDS_PKT_DATA_CONNECTED == IPv4ConnectionStatus) {
++                                    if (profile->ipv4.Address == 0 || check_ipv4_address(profile) == 0) {
++                                        request_ops->requestDeactivateDefaultPDP(profile, IpFamilyV4);
++                                        IPv4ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                                    }
++                                } else {
+                                     IPv4ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
+                                 }
+                             }
+@@ -589,8 +619,25 @@ static int qmi_main(PROFILE_T *profile)
+                                 if (profile->enable_ipv4 && profile->request_ops != &qmi_request_ops) {
+                                     IPv6ConnectionStatus = IPv4ConnectionStatus;
+                                 }
++                                else if (!wds_query_v6_unsupported) {
++                                    qmierr = request_ops->requestQueryDataCall(&IPv6ConnectionStatus, IpFamilyV6);
++                                    if (qmierr == ETIMEDOUT) {
++                                        dbg_time("IPv6 requestQueryDataCall timed out; falling back to runtime IP check");
++                                        wds_query_v6_unsupported = 1;
++                                        if (IPv6ConnectionStatus != QWDS_PKT_DATA_CONNECTED)
++                                            IPv6ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                                    } else if (qmierr) {
++                                        IPv6ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                                    }
++                                }
++                                else if (IPv6ConnectionStatus == QWDS_PKT_DATA_CONNECTED) {
++                                    if (request_ops->requestGetIPAddress(profile, IpFamilyV6) != 0 || !profile->ipv6.Address[0]) {
++                                        request_ops->requestDeactivateDefaultPDP(profile, IpFamilyV6);
++                                        IPv6ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
++                                    }
++                                }
+                                 else {
+-                                    request_ops->requestQueryDataCall(&IPv6ConnectionStatus, IpFamilyV6);
++                                    IPv6ConnectionStatus = QWDS_PKT_DATA_DISCONNECTED;
+                                 }
+                             }
+                             else {
+diff --git a/application/quectel_CM_5G_M/src/qmap_bridge_mode.c b/application/quectel_CM_5G_M/src/qmap_bridge_mode.c
+index 93423bb..287a930 100644
+--- a/application/quectel_CM_5G_M/src/qmap_bridge_mode.c
++++ b/application/quectel_CM_5G_M/src/qmap_bridge_mode.c
+@@ -110,7 +110,7 @@ int ql_enable_qmi_wwan_rawip_mode(PROFILE_T *profile) {
+     if (!qmidev_is_qmiwwan(profile->qmichannel))
+         return 0;
+ 
+-    snprintf(filename, sizeof(filename), "/sys/class/net/%s/qmi/rawip", profile->usbnet_adapter);
++    snprintf(filename, sizeof(filename), "/sys/class/net/%s/qmi/raw_ip", profile->usbnet_adapter);
+     n = ql_fread(filename, buf, sizeof(buf));
+ 
+     if (n == 0)
+diff --git a/application/quectel_CM_5G_M/src/udhcpc.c b/application/quectel_CM_5G_M/src/udhcpc.c
+index 4c704e8..e0d62df 100644
+--- a/application/quectel_CM_5G_M/src/udhcpc.c
++++ b/application/quectel_CM_5G_M/src/udhcpc.c
+@@ -158,6 +158,34 @@ static int ql_raw_ip_mode_check(const char *ifname, uint32_t ip) {
+     return mode_change;
+ }
+ 
++static void ql_ensure_qmi_wwan_raw_ip(const char *ifname) {
++    int fd;
++    char raw_ip[128];
++    char mode[2] = "X";
++
++    snprintf(raw_ip, sizeof(raw_ip), "/sys/class/net/%s/qmi/raw_ip", ifname);
++    if (access(raw_ip, F_OK))
++        return;
++
++    fd = open(raw_ip, O_RDWR | O_NONBLOCK | O_NOCTTY);
++    if (fd < 0) {
++        dbg_time("%s fail to open(%s), errno:%d (%s)", __func__, raw_ip, errno, strerror(errno));
++        return;
++    }
++
++    if (read(fd, mode, 2) > 0 && (mode[0] == '0' || mode[0] == 'N')) {
++        ifc_set_state(ifname, 0);
++        dbg_time("echo Y > /sys/class/net/%s/qmi/raw_ip", ifname);
++        mode[0] = 'Y';
++        if (write(fd, mode, 1) != 1) {
++            dbg_time("%s fail to write(%s), errno:%d (%s)", __func__, raw_ip, errno, strerror(errno));
++        }
++        ifc_set_state(ifname, 1);
++    }
++
++    close(fd);
++}
++
+ static void* udhcpc_thread_function(void* arg) {
+     FILE * udhcpc_fp;
+     char *udhcpc_cmd = (char *)arg;
+@@ -508,6 +536,10 @@ void udhcpc_start(PROFILE_T *profile) {
+ 
+     ql_set_driver_link_state(profile, 1);
+ 
++    if (profile->rawIP && qmidev_is_qmiwwan(profile->qmichannel)) {
++        ql_ensure_qmi_wwan_raw_ip(profile->usbnet_adapter);
++    }
++
+     if (profile->qmapnet_adapter[0]) {
+         ifname = profile->qmapnet_adapter;
+     }
