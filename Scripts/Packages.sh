@@ -219,6 +219,13 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 	fi
 	mkdir -p package/quectel-cm-stock
 	cp -f "$QUECTEL_CM_BIN" package/quectel-cm-stock/quectel-CM
+	# 首次启动关闭 fullcone / 硬件流卸载（6.18 内核上会导致防火墙 nft 注入失败、NAT 失效）
+	FW_FIX="$GITHUB_WORKSPACE/Scripts/files/99-h5000m-firewall-fix"
+	if [ -f "$FW_FIX" ]; then
+		mkdir -p files/etc/uci-defaults
+		cp -f "$FW_FIX" files/etc/uci-defaults/99-h5000m-firewall-fix
+		chmod +x files/etc/uci-defaults/99-h5000m-firewall-fix
+	fi
 	cat > package/quectel-cm-stock/Makefile <<'MAKEFILE_EOF'
 include $(TOPDIR)/rules.mk
 
