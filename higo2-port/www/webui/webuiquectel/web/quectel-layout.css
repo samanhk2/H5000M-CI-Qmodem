@@ -1,0 +1,41 @@
+/* Scoped .89 dashboard / network rate layout adaptation; no historical account/theme changes. */
+/* Traffic counters must remain readable on narrow screens.  JavaScript tags
+ * only the traffic-statistics card, so other status cards keep their layout. */
+@media (max-width: 767px) {
+    #root [data-modemwebui-traffic="1"] .my-inline-card > .ant-card-body {
+        overflow: visible !important;
+    }
+
+    #root [data-modemwebui-traffic="1"] .my-inline-card > .ant-card-body > .ant-row {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        gap: 8px !important;
+        margin: 0 !important;
+    }
+
+    #root [data-modemwebui-traffic="1"] .my-inline-card > .ant-card-body > .ant-row > .ant-col {
+        flex: none !important;
+        width: auto !important;
+        max-width: none !important;
+        min-width: 0 !important;
+        padding: 0 !important;
+    }
+}
+
+@media (max-width: 479px) {
+    #root [data-modemwebui-traffic="1"] .my-inline-card > .ant-card-body > .ant-row {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+}
+
+/* Target-specific network-status rate row: do not inherit its wide row width. */
+#root .quectel-live-rate-card{height:auto!important;min-width:0!important;}
+#root .quectel-live-rate-card>.ant-card-body>.ant-row{
+ display:grid!important;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr))!important;
+ gap:12px!important;width:100%!important;min-width:0!important;max-width:100%!important;margin:0!important;
+}
+#root .quectel-live-rate-card>.ant-card-body>.ant-row>.ant-col{
+ flex:none!important;width:auto!important;min-width:0!important;max-width:none!important;padding:0!important;
+}

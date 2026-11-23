@@ -102,6 +102,25 @@ class Checker:
                 self.forbid(symbol, "Modem Pro 必须与 QModem 生态隔离")
             return
 
+        if self.variant == "higowebui":
+            self.require("CONFIG_PACKAGE_higo2-modem", "Higo2 模组管理栈 + WebUI")
+            for symbol in (
+                "CONFIG_PACKAGE_qmodem",
+                "CONFIG_PACKAGE_luci-app-qmodem",
+                "CONFIG_PACKAGE_luci-app-qmodem-next",
+                "CONFIG_PACKAGE_luci-app-qmodem-generic",
+                "CONFIG_PACKAGE_luci-i18n-qmodem-zh-cn",
+                "CONFIG_PACKAGE_sms-forwarder-next",
+                "CONFIG_PACKAGE_qmodem-smsd",
+                "CONFIG_PACKAGE_qmodem-sipd",
+                "CONFIG_PACKAGE_ubus-at-daemon",
+                "CONFIG_PACKAGE_sms-tool",
+                "CONFIG_PACKAGE_sms-tool_q",
+                "CONFIG_PACKAGE_quectel-CM-5G-M",
+            ):
+                self.forbid(symbol, "Higo2 栈必须与 QModem 生态隔离")
+            return
+
         common = [
             ("CONFIG_PACKAGE_qmodem", "QModem 核心包"),
             ("CONFIG_PACKAGE_qmodem_INCLUDE_generic-qmi-wwan", "必须选择通用 QMI 驱动"),

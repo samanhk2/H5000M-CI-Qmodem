@@ -1,0 +1,1057 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2023 Siriling <siriling@qq.com>
+
+START=95
+STOP=13
+USE_PROCD=1
+extra_command "suspend_modem" "停止已拔除模组的旧拨号实例"
+
+#脚本目录
+SCRIPT_DIR="${IPKG_INSTROOT:-}/usr/share/modem"
+
+#运行目录
+MODEM_RUNDIR="/var/run/modem"
+MODEM_RUN_CONFIG="${MODEM_RUNDIR}/config.cache"
+
+#导入组件工具
+if [ -r /lib/functions.sh ] && [ -r "${SCRIPT_DIR}/modem_scan.sh" ]; then
+        . "${SCRIPT_DIR}/modem_scan.sh"
+fi
+
+#设置防火墙
+# $1:网络接口名称
+set_firewall()
+{
+ local interface_name="$1" firewall roles uplink selected count
+ case "$interface_name" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+ firewall="$(ubus call uci get '{"config":"firewall"}')" || return 1
+ selected="$(printf '%s' "$firewall" | jq -r --arg interface "$interface_name" '
+  def members: if type=="array" then . elif type=="string" then split(" ") else [] end;
+  [.values | to_entries[] | select(.value[".type"]=="zone" and ((.value.network | members | index($interface)) != null)) | .key] | if length==1 then .[0] elif length==0 then "" else error("ambiguous firewall membership") end')" || return 1
+ # Existing explicit firewall membership belongs to the user and is retained.
+ [ -z "$selected" ] || return 0
+ roles="$(ubus call uci get '{"config":"easymesh"}')" || return 1
+ # Shared port-role metadata only; no dependency on Mesh state or mode.
+ uplink="$(printf '%s' "$roles" | jq -er '[.values[] | select(.[".type"]=="device") | .wan_network] | if length==1 and (.[0]|type)=="string" then .[0] else error("uplink role missing or ambiguous") end')" || return 1
+ case "$uplink" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+ [ "$(uci -q get network.${uplink})" = interface ] || return 1
+ selected="$(printf '%s' "$firewall" | jq -er --arg interface "$uplink" '
+  def members: if type=="array" then . elif type=="string" then split(" ") else [] end;
+  [.values | to_entries[] | select(.value[".type"]=="zone" and ((.value.network | members | index($interface)) != null)) | .key] | if length==1 then .[0] else error("uplink firewall ownership missing or ambiguous") end')" || return 1
+ case "$selected" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+ uci add_list firewall.${selected}.network="$interface_name" || return 1
+ uci commit firewall
+}
+
+modem_interface_target_current()
+{
+ local family="$1" name="$2" device="$3" plan
+ case "$device" in @*) device="$(uci -q get network.${device#@}.device)" ;; esac
+ plan="$(/usr/libexec/modem/at --interface-plan "$device")" || return 1
+ [ "$(printf '%s' "$plan" | jq -r '.owner.section')" = "modem${modem_no}" ] &&
+ [ "$(printf '%s' "$plan" | jq -r --arg family "$family" '.[$family]')" = "$name" ]
+}
+
+#设置IPv4网络接口
+# $1:网络接口名称
+# $2:网络接口
+set_ipv4_interface()
+{
+	local interface_name="$1"
+	local network_interface="$2"
+ modem_interface_target_current ipv4 "$interface_name" "$network_interface" || return 1
+
+	# netifd may already have brought up the persisted DHCP configuration.
+	# Rediscovering the same device must not release an existing lease.
+	if [ "$(uci -q get network.${interface_name}.proto)" = dhcp ] &&
+	   [ "$(uci -q get network.${interface_name}.device)" = "$network_interface" ]; then
+		local current_state
+		current_state="$(ubus call "network.interface.$interface_name" status 2>/dev/null)"
+		if [ "$(printf '%s' "$current_state" | jsonfilter -e '@.up')" = true ] ||
+		   [ "$(printf '%s' "$current_state" | jsonfilter -e '@.pending')" = true ]; then
+			set_firewall "$interface_name" || return 1
+			return 0
+		fi
+	fi
+
+	#删除原网络配置
+	uci -q del network.${interface_name}.ipaddr
+	uci -q del network.${interface_name}.netmask
+	uci -q del network.${interface_name}.gateway
+	uci -q del network.${interface_name}.peerdns
+	uci -q del network.${interface_name}.dns
+
+	#添加或修改网络配置
+	uci set network.${interface_name}='interface'
+	uci set network.${interface_name}.proto='dhcp'
+	uci set network.${interface_name}.device="${network_interface}"
+	uci set network.${interface_name}.ifname="${network_interface}"
+	# Apply policy before the first commit/ifup, without touching other interfaces.
+	[ ! -x /usr/bin/gwswitch.sh ] || /usr/bin/gwswitch.sh --prepare-interface "$interface_name" 4 || return 1
+	uci commit network
+
+	#加入WAN防火墙
+	set_firewall "${interface_name}" || return 1
+	# Mesh agents retain the modem but do not activate an alternate data uplink.
+	if [ "$(uci -q get network.${interface_name}.disabled)" = 1 ] &&
+	   [ -n "$(uci -q get network.${interface_name}.higo_mesh_gateway)" ]; then return 0; fi
+
+	#启动网络接口
+	ifup "${interface_name}"
+}
+
+#设置IPv6网络接口
+# $1:网络接口名称
+# $2:网络接口
+set_ipv6_interface()
+{
+	mkdir -p "$MODEM_RUNDIR"
+	(
+		flock -x 9 || exit 1
+		set_ipv6_interface_locked "$@"
+	) 9>"${MODEM_RUNDIR}/modem${modem_no}.ipv6-lock"
+}
+
+set_ipv6_interface_locked()
+{
+	local expected_generation="$3"
+	if [ -n "$expected_generation" ]; then
+		[ "$(cat "${MODEM_RUNDIR}/modem${modem_no}.ipv6-generation" 2>/dev/null)" = "$expected_generation" ] || return 0
+	fi
+	local interface_name="$1"
+	local network_interface="$2"
+ modem_interface_target_current ipv6 "$interface_name" "$network_interface" || return 1
+
+	if [ "$(uci -q get network.${interface_name}.proto)" = dhcpv6 ] &&
+	   [ "$(uci -q get network.${interface_name}.device)" = "$network_interface" ] &&
+	   [ "$(uci -q get network.${interface_name}.sourcefilter)" = 0 ]; then
+		local current_state
+		current_state="$(ubus call "network.interface.$interface_name" status 2>/dev/null)"
+		if [ "$(printf '%s' "$current_state" | jsonfilter -e '@.up')" = true ] ||
+		   [ "$(printf '%s' "$current_state" | jsonfilter -e '@.pending')" = true ]; then
+			set_firewall "$interface_name" || return 1
+			return 0
+		fi
+	fi
+
+	#添加或修改网络配置
+	uci set network.${interface_name}='interface'
+	uci set network.${interface_name}.proto='dhcpv6'
+	uci set network.${interface_name}.extendprefix='1'
+	# Native gateway policy still selects the whole uplink. Publish a usable
+	# default for local IPv6 sockets before they have selected a source address.
+	uci set network.${interface_name}.sourcefilter='0'
+	uci set network.${interface_name}.wait_linklocal='1'
+	# This interface is created from a physical modem netdev.  Do not let
+	# netifd autostart a persisted dhcpv6 client on the next boot before that
+	# device exists; this function explicitly ifups it once the netdev is ready.
+	uci set network.${interface_name}.auto='0'
+	uci set network.${interface_name}.device="${network_interface}"
+	uci set network.${interface_name}.ifname="${network_interface}"
+	# Apply policy before the first commit/ifup, without touching other interfaces.
+	[ ! -x /usr/bin/gwswitch.sh ] || /usr/bin/gwswitch.sh --prepare-interface "$interface_name" 6 || return 1
+	uci commit network
+
+	#加入WAN防火墙
+	set_firewall "${interface_name}" || return 1
+	# Mesh agents retain the modem but do not activate an alternate data uplink.
+	if [ "$(uci -q get network.${interface_name}.disabled)" = 1 ] &&
+	   [ -n "$(uci -q get network.${interface_name}.higo_mesh_gateway)" ]; then return 0; fi
+	
+	# DHCPv6's native protocol task subscribes to the actual link-local
+    # address event. Register it now without blocking Modem/QMI startup.
+
+	ifup "${interface_name}"
+}
+
+#设置IPV4和IPv6网络接口
+# $1:IPV4网络接口名称
+# $2:IPv6网络接口名称
+# $3:网络接口
+set_ipv4v6_interface()
+{
+	local ipv4_interface_name="$1"
+	local ipv6_interface_name="$2"
+	local network_interface="$3"
+	local generation_file="${MODEM_RUNDIR}/modem${modem_no}.ipv6-generation"
+	mkdir -p "$MODEM_RUNDIR"
+	local generation="$(cat /proc/sys/kernel/random/uuid)"
+	printf '%s\n' "$generation" > "$generation_file"
+
+	#设置IPV4网络接口
+	set_ipv4_interface "${ipv4_interface_name}" "${network_interface}" || return 1
+
+
+	#设置IPV6网络接口
+	local network_interface_alias=$(uci -q get modem.@global[0].network_interface_alias)
+	case $network_interface_alias in
+		"0") set_ipv6_interface "${ipv6_interface_name}" "${network_interface}" ;;
+		"1") set_ipv6_interface "${ipv6_interface_name}" "@${ipv4_interface_name}" ;; #别名
+	esac
+}
+
+#设置网络接口
+# $1:模块序号
+# $2:网络接口
+set_interface()
+{
+ local modem_no="$1" network_interface="$2" plan ipv4_name ipv6_name
+ plan="$(/usr/libexec/modem/at --interface-plan "$network_interface")" || return 1
+ [ "$(printf '%s' "$plan" | jq -r '.owner.section')" = "modem${modem_no}" ] || return 1
+ ipv4_name="$(printf '%s' "$plan" | jq -r '.ipv4')"
+ ipv6_name="$(printf '%s' "$plan" | jq -r '.ipv6')"
+ sync_ecm_ndp "$modem_no" "$ipv6_name" || return 1
+ case "$pdp_type" in
+  ipv4)
+   # Never ifdown a conventional name now owned by LAN or another role.
+   if [ "$(uci -q get network.${ipv6_name}.proto)" = dhcpv6 ]; then
+    modem_interface_target_current ipv6 "$ipv6_name" "$network_interface" || return 1
+    ifdown "$ipv6_name" >/dev/null 2>&1 || return 1
+   fi
+   set_ipv4_interface "$ipv4_name" "$network_interface" || return 1 ;;
+  ipv6)
+   if [ "$(uci -q get network.${ipv4_name}.proto)" = dhcp ]; then
+    modem_interface_target_current ipv4 "$ipv4_name" "$network_interface" || return 1
+    ifdown "$ipv4_name" >/dev/null 2>&1 || return 1
+   fi
+   set_ipv6_interface "$ipv6_name" "$network_interface" || return 1 ;;
+  ipv4v6) set_ipv4v6_interface "$ipv4_name" "$ipv6_name" "$network_interface" || return 1 ;;
+  *) logger -t modem "PDP address family missing; refusing guessed interface configuration"; return 1 ;;
+ esac
+ /etc/init.d/firewall restart
+}
+
+modem_process_start()
+{
+ case "$1" in ''|*[!0-9]*) return 1 ;; esac
+ sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk 'NF >= 20 && $20 ~ /^[0-9]+$/ { print $20 }'
+}
+
+# A stopped procd instance can still hold its QMI control fd while handling
+# SIGTERM. A deliberate USB reset must wait for that ownership to end.
+wait_modem_reset_processes()
+{
+ /usr/libexec/modem/at --wait-processes 8 "$@" && return 0
+ logger -p daemon.err -t modem "原拨号进程未退出，取消复位"
+ return 1
+}
+
+modem_ipv6_processes()
+{
+ local dev="$1" pid last started state
+ for pid in $(pidof odhcp6c); do
+  [ -r "/proc/$pid/cmdline" ] || continue
+  last=$(tr '\000' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk 'NF {last=$0} END {print last}')
+  [ "$last" = "$dev" ] || continue
+  started=$(modem_process_start "$pid")
+  [ -n "$started" ] || continue
+  state=$(awk '/^State:/ {print $2}' "/proc/$pid/status" 2>/dev/null)
+  [ -n "$state" ] && [ "$state" != Z ] || continue
+  [ "$(modem_process_start "$pid")" = "$started" ] || continue
+  printf '%s:%s\n' "$pid" "$started"
+ done
+}
+
+# netifd has completed teardown before a late owned client is retired.
+wait_modem_ipv6_exit()
+{
+ local dev="$1" expected_owner="${2:-}" owners
+ [ -n "$dev" ] || return 0
+ [ -z "$expected_owner" ] || [ "$(/usr/libexec/modem/at --owner)" = "$expected_owner" ] || return 1
+ owners=$(modem_ipv6_processes "$dev") || return 1
+ set -- $owners
+ /usr/libexec/modem/at --retire-processes 20 "$@" || {
+  logger -p daemon.err -t modem "IPv6 客户端未退出，保留载波"
+  return 1
+ }
+ [ -z "$expected_owner" ] || [ "$(/usr/libexec/modem/at --owner)" = "$expected_owner" ] || return 1
+ owners=$(modem_ipv6_processes "$dev") || return 1
+ [ -z "$owners" ] || {
+  logger -p daemon.err -t modem "IPv6 客户端归属已变化，保留载波"
+  return 1
+ }
+}
+
+suspend_modem()
+{
+	local number="$1" wait_reset="$2" network instance mode=offline pdp_type=ipv4
+	local instances owned_processes="" pid started ipv6_dev
+	case "$number" in ''|0[0-9]*|*[!0-9]*) return 1 ;; esac
+    local removed_event="${3:-}" removed_physical="${4:-}" removed_network="${5:-}"
+    if [ -n "$removed_event" ]; then
+        [ ! -e "$removed_event" ] && [ "$(uci -q get modem.modem${number}.path)" = "$removed_physical" ] && [ "$(uci -q get modem.modem${number}.network)" = "$removed_network" ] || return 1
+    fi
+
+	network="$(uci -q get modem.modem${number}.network)"
+
+    local links owner proof_revision logical generation expected current reset_dev devices=""
+    links="$(/usr/libexec/modem/at --data-links 2>/dev/null)" || links=""
+    if [ -n "$links" ]; then
+        owner="$(printf '%s' "$links" | jq -c '.owner')"
+        [ "$(printf '%s' "$links" | jq -r '.owner.section')" = "modem${number}" ] || return 1
+        proof_revision="$(printf '%s' "$links" | jq -r '.configRevision')"
+    elif [ "$wait_reset" = reset ]; then
+        logger -p daemon.err -t modem "Current data ownership unavailable; reset cleanup refused"
+        return 1
+    else
+        logger -t modem "Removed carrier has no current data owner; no logical interface guessed"
+    fi
+    [ -n "$links" ] || links='{"interfaces":[]}'
+    # Retire UPnP only when its actual external link belongs to this reset.
+    if [ "$wait_reset" = reset ] && [ -x /etc/init.d/miniupnpd ] && /etc/init.d/miniupnpd running; then
+        for reset_dev in $(printf '%s' "$links" | jq -r '.interfaces[].device' | sort -u); do
+            if grep -Fqx "ext_ifname=$reset_dev" /var/etc/miniupnpd.conf 2>/dev/null || grep -Fqx "ext_ifname6=$reset_dev" /var/etc/miniupnpd.conf 2>/dev/null; then
+                /etc/init.d/miniupnpd stop || return 1
+                break
+            fi
+        done
+    fi
+	# Delete the old generation before touching netifd: a deferred IPv6 worker
+	# must not resurrect an interface after USB removal or a new mode arrives.
+	mkdir -p "$MODEM_RUNDIR"
+	rm -f "${MODEM_RUNDIR}/modem${number}.ipv6-generation"
+	sync_ecm_ndp "$number"
+    # Use the actual current netifd clients; an agent may have none.
+    (
+        flock -x 9 || exit 1
+        for logical in $(printf '%s' "$links" | jq -r '.interfaces // [] | sort_by(-.depth)[] | .name'); do
+            generation="$(printf '%s' "$links" | jq -r --arg name "$logical" '.interfaces[] | select(.name==$name) | .generation')"
+            current="$(/usr/libexec/modem/at --data-links)" || exit 1
+            [ "$(printf '%s' "$current" | jq -c '.owner')" = "$owner" ] &&
+            [ "$(printf '%s' "$current" | jq -r '.configRevision')" = "$proof_revision" ] &&
+            printf '%s' "$current" | jq -e --arg name "$logical" --arg generation "$generation" '.interfaces[] | select(.name==$name and .generation==$generation)' >/dev/null || exit 1
+            if [ -n "$removed_event" ]; then
+                [ ! -e "$removed_event" ] && [ "$(uci -q get modem.modem${number}.path)" = "$removed_physical" ] && [ "$(uci -q get modem.modem${number}.network)" = "$removed_network" ] || exit 1
+            fi
+            ifdown "$logical" >/dev/null 2>&1 || exit 1
+        done
+        for logical in $(printf '%s' "$links" | jq -r '.interfaces // [] | .[].name'); do
+            /usr/bin/lua /usr/share/modem/modem_network_wait.lua "$logical" 20 || exit 1
+        done
+        for ipv6_dev in $(printf '%s' "$links" | jq -r '.interfaces // [] | .[].device' | sort -u); do
+            [ "$(/usr/libexec/modem/at --owner)" = "$owner" ] || exit 1
+            wait_modem_ipv6_exit "$ipv6_dev" "$owner" || exit 1
+        done
+        for logical in $(printf '%s' "$links" | jq -r '.interfaces // [] | .[].name'); do
+            /usr/bin/lua /usr/share/modem/modem_network_wait.lua "$logical" 0 || exit 1
+        done
+        [ -z "$owner" ] || [ "$(/usr/libexec/modem/at --owner)" = "$owner" ] || exit 1
+    ) 9>"${MODEM_RUNDIR}/modem${number}.ipv6-lock" || return 1
+	instances="$(m_native_dial_instances "$number" "$network")" || return 1
+	for instance in $(printf '%s' "$instances" | jq -r '.[].key'); do
+        [ -z "$owner" ] || [ "$(/usr/libexec/modem/at --owner)" = "$owner" ] || return 1
+		if [ "$wait_reset" = reset ]; then
+			pid=$(printf '%s' "$instances" | jq -r --arg instance "$instance" '.[] | select(.key == $instance) | .value.pid // 0')
+			case "$pid" in ''|0|*[!0-9]*) ;; *)
+                started=$(modem_process_start "$pid")
+                [ -n "$started" ] || { logger -p daemon.err -t modem "Dial process birth unavailable; reset cleanup refused"; return 1; }
+                owned_processes="$owned_processes $pid:$started"
+			;; esac
+		fi
+        if [ -n "$removed_event" ]; then
+            [ ! -e "$removed_event" ] && [ "$(uci -q get modem.modem${number}.path)" = "$removed_physical" ] && [ "$(uci -q get modem.modem${number}.network)" = "$removed_network" ] || return 1
+        fi
+		procd_kill modem "$instance"
+	done
+	if [ -f "$MODEM_RUN_CONFIG" ] && [ -n "$network" ]; then
+		awk -F, -v network="$network" '$1 != network' "$MODEM_RUN_CONFIG" > "${MODEM_RUN_CONFIG}.new"
+		mv "${MODEM_RUN_CONFIG}.new" "$MODEM_RUN_CONFIG"
+	fi
+	rm -f /tmp/modem-service-ready
+	[ "$wait_reset" != reset ] || wait_modem_reset_processes $owned_processes
+}
+
+#移远拨号工具
+quectel_cm()
+{
+ local current_owner current_section current_context
+ current_owner="$(/usr/libexec/modem/at --owner)" || return 1
+ current_section="$(printf '%s' "$current_owner" | jq -er '.section')" || return 1
+ [ "$current_section" = "modem${modem_no}" ] && [ "$(uci -q get modem.${current_section}.network)" = "$network" ] || return 1
+ current_context="$(uci -q get modem.${current_section}.define_connect)" || return 1
+ case "$current_context" in ''|0*|*[!0-9]*) return 1 ;; esac
+ [ "${#current_context}" -le 3 ] && [ "$current_context" -le 255 ] || return 1
+ [ "$(/usr/libexec/modem/at --owner)" = "$current_owner" ] || return 1
+	# Preserve the interface address supplied by the modem/driver. Raw-IP links
+	# may legitimately have no Ethernet MAC; never synthesize a replacement.
+	
+	#拨号
+	procd_open_instance
+	procd_set_param command "quectel-CM"
+	procd_append_param command "-n" "$current_context"
+
+	case $pdp_type in
+		"ipv4") procd_append_param command "-4" ;;
+		"ipv6") procd_append_param command "-6" ;;
+		"ipv4v6") procd_append_param command "-4" "-6" ;;
+		*) procd_append_param command "-4" "-6" ;;
+	esac
+
+	if [ "$network_bridge" = "1" ]; then
+		procd_append_param command "-b"
+	fi
+	# -s consumes APN/user/password/auth positionally. Empty values must
+	# retain their slots, including operator-default APN with credentials.
+	# With no custom APN or authentication, keep the modem-managed profile.
+	if [ -n "$apn$username$password" ] || { [ -n "$auth" ] && [ "$auth" != none ]; }; then
+		procd_append_param command "-s" "$apn" "$username" "$password" "${auth:-none}"
+	fi
+	if [ "$network" != "" ]; then
+		procd_append_param command "-i" "$network"
+	fi
+	#日志
+	procd_append_param command "-f" "${MODEM_RUNDIR}/modem${modem_no}_dial.cache"
+
+	procd_set_param respawn
+	procd_set_param procd_pid "${MODEM_RUNDIR}/modem${modem_no}.pid"
+	procd_close_instance
+}
+
+#设置网络接口（Modem Manager）
+# $1:接口名称
+# $2:模组路径
+set_interface_modemmanager()
+{
+	local interface_name="$1"
+	local path="$2"
+
+	if [ "$(uci -q get network.${interface_name}.device)" != "${path}" ] ; then
+		uci set network.${interface_name}='interface'
+		uci set network.${interface_name}.proto='modemmanager'
+		uci set network.${interface_name}.device="${path}"
+		uci set network.${interface_name}.auth="$auth"
+		uci set network.${interface_name}.iptype="$pdp_type"
+
+		if [ "$apn" != "" ]; then
+			uci set network.${interface_name}.apn="$apn"
+		fi
+		if [ "$pincode" != "" ]; then
+			uci set network.${interface_name}.pincode="$pincode"
+		fi
+		if [ "$username" != "" ]; then
+			uci set network.${interface_name}.username="$username"
+		fi
+		if [ "$password" != "" ]; then
+			uci set network.${interface_name}.password="$password"
+		fi
+
+		uci commit network
+
+		#加入WAN防火墙
+		set_firewall "${interface_name}" || return 1
+	# Mesh agents retain the modem but do not activate an alternate data uplink.
+	if [ "$(uci -q get network.${interface_name}.disabled)" = 1 ] &&
+	   [ -n "$(uci -q get network.${interface_name}.higo_mesh_gateway)" ]; then return 0; fi
+	fi
+
+	#启动网络接口
+	[ ! -x /usr/bin/gwswitch.sh ] || /usr/bin/gwswitch.sh prepare
+	ifup "${interface_name}"
+}
+
+#模块管理
+modemmanager()
+{
+	#获取接口名称
+	local interface_name="wwan_5g_${modem_no}"
+	#获取调制解调器设备（模组路径）
+	local path=$(uci -q get modem.modem${modem_no}.path)
+	#设置Modem Manager网络接口
+	set_interface_modemmanager "$interface_name" "$path"
+
+	#拨号
+	procd_open_instance
+	procd_set_param command sh ${SCRIPT_DIR}/modem_network_task.sh "${id}" "${modem_no}" "modemmanager"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+qmi()
+{
+	#选择拨号工具
+	case $dial_tool in
+		"quectel-CM") quectel_cm ;;
+		"mmcli") modemmanager ;;
+		"") quectel_cm ;;
+		*) quectel_cm ;;
+	esac
+}
+
+gobinet()
+{
+	#获取制造商
+	local manufacturer=$(uci -q get modem.modem${modem_no}.manufacturer)
+	
+	#拨号
+	case $manufacturer in
+		"quectel") qmi ;;
+		*)
+			procd_open_instance
+			procd_set_param command sh ${SCRIPT_DIR}/modem_network_task.sh "${id}" "${modem_no}" "gobinet"
+			procd_set_param respawn
+			procd_close_instance
+		;;
+	esac
+}
+
+ecm()
+{
+	#拨号
+	procd_open_instance
+	procd_set_param command sh ${SCRIPT_DIR}/modem_network_task.sh "${id}" "${modem_no}" "ecm"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+mbim()
+{
+	qmi
+}
+
+rndis()
+{
+	#拨号
+	procd_open_instance
+	procd_set_param command sh ${SCRIPT_DIR}/modem_network_task.sh "${id}" "${modem_no}" "rndis"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+ncm()
+{
+	# Share the network task implementation without mislabelling NCM as ECM.
+	procd_open_instance
+	procd_set_param command sh ${SCRIPT_DIR}/modem_network_task.sh "${id}" "${modem_no}" "ncm"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+stop_qmi()
+{
+ # One cleanup implementation owns actual interfaces and exact procd jobs.
+ suspend_modem "$modem_no"
+}
+
+stop_gobinet()
+{
+ local owner
+ owner="$(/usr/libexec/modem/at --owner)" || return 1
+ [ "$(printf '%s' "$owner" | jq -r '.section')" = "modem${modem_no}" ] || return 1
+ [ "$(printf '%s' "$owner" | jq -r '.manufacturer | ascii_downcase')" != quectel ] || stop_qmi
+}
+
+stop_ecm()
+{
+ local owner section manufacturer define_connect command
+ owner="$(/usr/libexec/modem/at --owner)" || return 1
+ section="$(printf '%s' "$owner" | jq -er '.section')" || return 1
+ [ "$section" = "modem${modem_no}" ] || return 1
+ manufacturer="$(printf '%s' "$owner" | jq -r '.manufacturer | ascii_downcase')"
+ define_connect="$(uci -q get modem.${section}.define_connect)"
+ case "$define_connect" in ''|0*|*[!0-9]*) return 1 ;; esac
+ case "$manufacturer" in
+  quectel) command="AT+QNETDEVCTL=${define_connect},2,1" ;;
+  tdtech) command="AT^NDISDUP=${define_connect},0" ;;
+  *) logger -t modem "Unsupported data disconnect vendor; refusing guessed command"; return 1 ;;
+ esac
+ jq -cn --argjson owner "$owner" --arg command "$command" '{port:"/dev/modem-at",owner:$owner,commands:[$command],timeout:4,baud:115200}' | /usr/libexec/modem/at --json >/dev/null
+}
+
+stop_mbim()
+{
+	stop_qmi
+}
+
+stop_rndis()
+{
+	stop_ecm
+}
+
+stop_ncm()
+{
+	stop_ecm
+}
+
+#获取模块序号
+# $1:移动网络
+get_modem_no()
+{
+ local owner section configured
+ modem_no=""
+ owner="$(/usr/libexec/modem/at --owner)" || return 1
+ section="$(printf '%s' "$owner" | jq -er '.section')" || return 1
+ case "$section" in modem*) ;; *) return 1 ;; esac
+ configured="$(uci -q get modem.${section}.network)"
+ [ -n "$1" ] && [ "$configured" = "$1" ] || return 1
+ modem_no="${section#modem}"
+ case "$modem_no" in ''|0[0-9]*|*[!0-9]*) modem_no=""; return 1 ;; esac
+}
+
+#获取拨号模式
+# $1:模块号
+get_mode()
+{
+	local modem_no="$1"
+
+	local manufacturer=$(uci -q get modem.modem${modem_no}.manufacturer)
+	local at_port="/dev/modem-at"
+	local platform=$(uci -q get modem.modem${modem_no}.platform)
+
+	# USB discovery writes the device section before AT identification has
+	# filled manufacturer/platform.  Never manufacture and execute a function
+	# name such as unknown_get_mode during that intermediate state.
+	local get_mode_fn="${manufacturer}_get_mode"
+	command -v "${get_mode_fn}" >/dev/null 2>&1 || {
+		echo ""
+		return 0
+	}
+	mode=$("${get_mode_fn}" "${at_port}" "${platform}")
+	echo "$mode"
+}
+
+#网络预设
+connect_presets()
+{
+	local at_port="/dev/modem-at" MODEM_AT_EXPECTED_OWNER
+    MODEM_AT_EXPECTED_OWNER="$(/usr/libexec/modem/at --owner)" || return 1
+    [ "$(printf '%s' "$MODEM_AT_EXPECTED_OWNER" | jq -r '.section')" = "modem${modem_no}" ] || return 1
+    export MODEM_AT_EXPECTED_OWNER
+
+	#运营商选择设置
+	local at_command='AT+COPS=0,0'
+	tmp=$(at "${at_port}" "${at_command}") || return 1
+	printf '%s\n' "$tmp" | tr -d '\r' | grep -qx 'OK' || return 1
+
+    local define_connect pdp_type_tmp current current_apn current_type target_apn
+    define_connect="$(uci -q get modem.modem${modem_no}.define_connect)" || return 1
+    case "$define_connect" in ''|*[!0-9]*) return 1 ;; esac
+    define_connect="$(expr "$define_connect" + 0)" || return 1
+    [ "$define_connect" -gt 0 ] && [ "$define_connect" -le 255 ] || return 1
+    case "$pdp_type" in
+        ipv4) pdp_type_tmp=IP ;;
+        ipv6) pdp_type_tmp=IPV6 ;;
+        ipv4v6) pdp_type_tmp=IPV4V6 ;;
+        *) logger -t modem "PDP address family missing or invalid"; return 1 ;;
+    esac
+
+    tmp="$(at "$at_port" 'AT+CGDCONT?')" || return 1
+    printf '%s\n' "$tmp" | tr -d '\r' | grep -qx OK || return 1
+    # The target jq has no regex engine. Parse only the quoted leading fields
+    # and require unambiguous separators before using the current APN.
+    current="$(printf '%s' "$tmp" | jq -Rrs --arg cid "$define_connect" '
+      def compact: explode | map(select(.!=32 and .!=9)) | implode;
+      [split("\n")[] | split("\r") | join("") | select(startswith("+CGDCONT:")) |
+       ltrimstr("+CGDCONT:") as $row |
+       ($row | split(",")[0] | compact | tonumber) as $number |
+       select($number==($cid | tonumber)) |
+       ($row | split("\"")) as $parts |
+       if ($parts | length)>=5 and
+          ($parts[0] | split(",") | length)==2 and
+          ($parts[0] | split(",")[1] | compact)=="" and
+          ($parts[2] | compact)=="," and
+          (($parts[4] | compact)=="" or ($parts[4] | compact | startswith(",")))
+       then {pdp:($parts[1] | ascii_upcase),apn:$parts[3]}
+       else error("invalid current PDP") end] |
+      if length==0 then null elif length==1 then .[0] else error("ambiguous current PDP") end')" || return 1
+    current_apn="$(printf '%s' "$current" | jq -r '.apn // ""')" || return 1
+    current_type="$(printf '%s' "$current" | jq -r '.pdp // ""')" || return 1
+    # An empty native APN keeps the modem-managed value. Only the requested
+    # address family changes; other contexts are never selected or rewritten.
+    target_apn="${apn:-$current_apn}"
+    if [ "$current_type" = "$pdp_type_tmp" ] &&
+       [ "$(printf '%s' "$current_apn" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$target_apn" | tr 'A-Z' 'a-z')" ]; then
+        return 0
+    fi
+    at_command="AT+CGDCONT=$define_connect,\"$pdp_type_tmp\",\"$target_apn\""
+    tmp="$(at "$at_port" "$at_command")" || return 1
+    printf '%s\n' "$tmp" | tr -d '\r' | grep -qx OK || return 1
+
+	return 0
+}
+
+#停止拨号
+# $1:配置ID
+stop_dial()
+{
+ local section="$1" id network mode temporary
+ network="$(uci -q get modem.${section}.network)" || return 1
+ id="$(uci -q get modem.${section}.id)" || id="$section"
+ [ -n "$network" ] && [ -n "$id" ] || return 1
+ [ -f "$MODEM_RUN_CONFIG" ] && grep -Fqx -- "$network,$id" "$MODEM_RUN_CONFIG" || return 0
+ get_modem_no "$network" || return 1
+ mode="$(get_mode "$modem_no")" || return 1
+ case "$mode" in
+  qmi|gobinet|ecm|mbim|rndis|ncm) "stop_$mode" || return 1 ;;
+  *) return 1 ;;
+ esac
+ temporary="${MODEM_RUN_CONFIG}.stop.$$"
+ (umask 077; awk -F, -v network="$network" -v id="$id" '$1 != network || $2 != id' "$MODEM_RUN_CONFIG" > "$temporary") || return 1
+ mv "$temporary" "$MODEM_RUN_CONFIG"
+}
+
+dial_checked()
+{
+ if ! dial "$@"; then logger -p daemon.err -t modem "拨号配置 $1 应用失败"; fi
+}
+
+dial()
+{
+	local enable id network profile_owner current_owner
+	config_get network "$1" network
+	get_modem_no "$network" || return 0
+	config_get profile_owner "$1" profile_owner
+	current_owner="$(uci -q get modem.modem${modem_no}.profile_owner)" || return 1
+	[ -n "$profile_owner" ] && [ "$profile_owner" = "$current_owner" ] || return 0
+	config_get enable "$1" enable 1
+	config_get id "$1" id "$1"
+
+	#停止拨号配置
+	[ "$enable" = "0" ] && {
+		stop_dial "$1"
+		return 0
+	}
+
+	local remarks			#备注
+	local dial_tool			#拨号工具
+	local pdp_type			#网络类型（IP类型）
+	local network_bridge	#网络桥接
+	local apn				#接入点
+	local username			#用户名
+	local password			#密码
+	local auth				#认证类型
+
+	config_get remarks $1 remarks
+	config_get dial_tool $1 dial_tool
+	config_get pdp_type $1 pdp_type
+	config_get network_bridge $1 network_bridge 1
+	config_get apn $1 apn
+	config_get username $1 username
+	config_get password $1 password
+	config_get auth $1 auth
+
+    # Discovery and boot recovery have already handed off the current owner.
+    # Query its actual mode once. An unavailable reply leaves native readiness
+    # unpublished; discovery/service completion triggers the next attempt.
+    local mode
+    mode=$(get_mode "${modem_no}") || return 1
+
+	#获取不到拨号模式
+	[ -z "$mode" ] || [ "$mode" = "unknown" ] && {
+        logger -t modem "Current data mode unavailable; saved dial profile preserved"
+        return 1
+	}
+
+	#查看该移动网络是否已经有拨号配置在运行
+	local defer_interface=0 network_interface
+	network_interface=$(uci -q get modem.modem${modem_no}.network_interface) || return 1
+	case "$mode" in
+		qmi|gobinet|mbim) defer_interface=1 ;;
+		ecm|rndis|ncm) ;;
+		*) return 1 ;;
+	esac
+	mkdir -m 0755 -p "${MODEM_RUNDIR}"
+	if [ ! -f "${MODEM_RUN_CONFIG}" ] || ! awk -F, -v network="$network" '$1 == network { found=1 } END { exit !found }' "$MODEM_RUN_CONFIG"; then
+		# QMI/MBIM must establish the data session before DHCP is expected to
+		# succeed.  Waiting for IPv4 here used to delay quectel-CM itself by the
+		# full DHCP timeout on every cold boot.  Defer only these interfaces until
+		# after the dialer has been registered; ECM/NCM keep their established
+		# ordering because their netdev is already the data path.
+		if [ "$defer_interface" = "0" ]; then
+			set_interface "${modem_no}" "${network_interface}" || return 1
+		fi
+	else
+		local config_id=$(awk -v network="${network}" -F',' '$1 == network { print $2 }' "${MODEM_RUN_CONFIG}")
+		#该移动网络已存在，且已有其他拨号配置在运行
+		if [ "$id" != "$config_id" ]; then
+			uci set modem.$1.enable=0
+			uci commit modem
+			return 0
+		fi
+	fi
+
+	# A receipt certifies a completed application, never an attempted one.
+	# Retire only this profile's receipt before native commands can fail.
+	local receipt_tmp="${MODEM_RUN_CONFIG}.apply.$$"
+	if [ -f "$MODEM_RUN_CONFIG" ]; then
+		awk -F, -v network="$network" -v id="$id" '$1 != network || $2 != id' "$MODEM_RUN_CONFIG" > "$receipt_tmp" || { rm -f "$receipt_tmp"; return 1; }
+		mv "$receipt_tmp" "$MODEM_RUN_CONFIG" || return 1
+	fi
+	#设置网络预设
+	connect_presets || return 1
+	# The mode was validated before interface creation or AT presets.
+	"$mode" || return 1
+	if [ "$defer_interface" = "1" ]; then
+		set_interface "${modem_no}" "${network_interface}" || return 1
+	fi
+	printf '%s,%s\n' "$network" "$id" >> "$MODEM_RUN_CONFIG" || return 1
+	return 0
+
+}
+
+#删除拨号配置
+del_dial_config()
+{
+ [ -f "$MODEM_RUN_CONFIG" ] || return 0
+ local configuration retained temporary
+ configuration="$(ubus call uci get '{"config":"modem"}')" || return 1
+ retained="$(printf '%s' "$configuration" | jq -r '
+  .values as $values |
+  [$values[] | select(.[".type"] == "dial-config") |
+   . as $profile |
+   [$values[] | select(.[".type"] == "modem-device" and
+    .network == $profile.network and .profile_owner == $profile.profile_owner and
+    (.profile_owner | type) == "string" and (.profile_owner | length) == 64)] |
+   select(length == 1) | $profile |
+   select((.network | type) == "string" and (.id | type) == "string") |
+   (.network + "," + .id)] | .[]?')"
+ [ "$?" = 0 ] || return 1
+ temporary="${MODEM_RUN_CONFIG}.prune.$$"
+ (umask 077; printf '%s\n' "$retained" | awk '
+  NR == FNR { if (length($0)) current[$0] = 1; next }
+  $0 in current { print }
+ ' - "$MODEM_RUN_CONFIG" > "$temporary") || { rm -f "$temporary"; return 1; }
+ mv "$temporary" "$MODEM_RUN_CONFIG"
+}
+
+#统计模组数量
+count_modem_number()
+{
+	local number="${1#modem}"
+	case "$1:$number" in modem*:*) ;; *) modem_count_invalid=1; return 1;; esac
+	case "$number" in ''|0[0-9]*|*[!0-9]*) modem_count_invalid=1; return 1;; esac
+	# Sparse section numbers are valid; consumers iterate an exclusive upper bound.
+	[ "${#number}" -le 4 ] && [ "$number" -lt 1024 ] || { modem_count_invalid=1; return 1; }
+	[ "$number" -lt "$modem_count" ] || modem_count=$((number + 1))
+}
+
+service_triggers()
+{
+ procd_add_raw_trigger "modem.discovery" 1000 /etc/init.d/modem reload
+	# The scanner commits /etc/config/modem repeatedly while assembling one
+	# device (path, netdev, ports, identity and dial profile).  Reloading for
+	# every intermediate commit caused unknown-mode calls, duplicate dialers
+	# and contention with modemwebui's AT initialization.  The completed auto
+	# profile performs one explicit restart; user Save & Apply also invokes the
+	# service explicitly through LuCI.
+	return 0
+}
+
+# S95 owns initial activation. Net hotplug still records discovery during boot,
+# but queues activation until the initial procd submission has completed.
+boot() {
+	start "$@"
+	local boot_result=$?
+	touch /tmp/modem-boot-complete
+	if [ -e /tmp/modem-boot-pending ]; then
+		rm -f /tmp/modem-boot-pending
+		(
+			# Never inherit the parent's procd lock into a recovery reload.
+			exec 1000>&-
+            local boot_owner boot_section boot_network
+            boot_owner="$(/usr/libexec/modem/at --owner)" || exit 0
+            boot_section="$(printf '%s' "$boot_owner" | jq -er '.section')" || exit 1
+            case "$boot_section" in ''|*[!A-Za-z0-9_]*) exit 1 ;; esac
+            boot_network="$(uci -q get modem.${boot_section}.network)"
+            [ -z "$boot_network" ] || enable_dial "$boot_network"
+
+		) >/dev/null 2>&1 &
+	fi
+	return "$boot_result"
+}
+
+start_service() {
+ # Late tty/data siblings may arrive after the single boot reconciliation.
+ # Keep the retry under this same procd service, including failed startup.
+ mkdir -p "$MODEM_RUNDIR" || return 1
+ procd_open_instance discovery
+ procd_set_param command /usr/share/modem/modem_boot_discovery.sh
+ procd_set_param term_timeout 5
+ procd_close_instance
+	# Persisted relay state must not survive a boot without its USB netdev.
+ local stale_no stale_section mode=offline pdp_type=ipv4 stale_sections
+ stale_sections="$(ubus call uci get '{"config":"dhcp"}' | jq -r '.values | to_entries[] | select(.value.modem_managed=="1") | .key')" || return 1
+ for stale_section in $stale_sections; do
+  case "$stale_section" in modem_ndp_*) stale_no="${stale_section#modem_ndp_}" ;; *) logger -t modem "Unknown managed NDP record; startup cleanup refused"; return 1 ;; esac
+  case "$stale_no" in ''|0[0-9]*|*[!0-9]*) return 1 ;; esac
+  sync_ecm_ndp "$stale_no" || return 1
+ done
+
+	echo "<6>BOOTMARK modem start" > /dev/kmsg
+	rm -f /tmp/modem-service-ready
+    # Current native discovery publishes the actual owner synchronously.
+    # The removed profile-selector worker no longer owns startup ordering.
+	# Recover actual devices missed before the early UCI provider was ready.
+	m_reconcile_present_networks || return 1
+	# Reconcile already-recorded USB modems after boot. Hotplug may have
+	# delivered the network event before all tty children existed, so the
+	# startup path must also publish the single logical AT endpoint.
+ local enumerated_paths enumerated_path actual_path="" actual_count=0
+ enumerated_paths="$(ubus call uci get '{"config":"modem"}' | jq -r '[.values[] | select(.[".type"]=="modem-device") | .path // empty] | unique[]')" || return 1
+ for enumerated_path in $enumerated_paths; do
+  [ -d "$enumerated_path" ] || continue
+  actual_count=$((actual_count + 1));actual_path="$enumerated_path"
+ done
+ if [ "$actual_count" -gt 1 ]; then
+  logger -t modem "Multiple physical modems require explicit owner selection; not probing the first device"
+  return 1
+ fi
+ [ "$actual_count" = 0 ] || m_set_modem_port "$actual_path" || return 1
+
+    # Port publication above completes synchronously. Read the actual owner
+    # below; an incomplete enumeration is handed back to native discovery.
+    local native_owner native_section
+
+	# No device at early boot is a pending discovery, never service readiness.
+	# USB hotplug calls enable_dial after publishing the endpoint and profile,
+	# which starts this service again when discovery actually completes.
+	if ! native_owner="$(/usr/libexec/modem/at --owner 2>/dev/null)"; then
+		logger -t modem "AT endpoint unavailable; waiting for modem discovery"
+		return 0
+	fi
+
+	# Publish the endpoint before starting its one-shot consumer.  Waiting for
+	# S100sendat-cfun here would block the later rc.d entry until timeout.
+	native_section="$(printf '%s' "$native_owner" | jq -er '.section')" || return 1
+ configured_name="$(printf '%s' "$native_owner" | jq -r '.model | ascii_downcase')"
+ configured_manufacturer="$(printf '%s' "$native_owner" | jq -r '.manufacturer | ascii_downcase')"
+ local configured_platform
+ configured_platform="$(printf '%s' "$native_owner" | jq -r '.platform')"
+  /usr/libexec/modem/at --boot-recover
+  local recovery_result=$?
+  case "$recovery_result" in
+   0) ;;
+   75)
+    rm -f "$MODEM_RUNDIR/boot-discovery.notified"
+    logger -t modem '鼎桥启动复位，等待重新枚举'
+    return 0 ;;
+   *) logger -p daemon.err -t modem '鼎桥启动检查失败'; return 1 ;;
+  esac
+ # A bound tty is not a recognized modem. Leave readiness unpublished while
+ # the supervised discovery worker retries the actual identity.
+ if ! jq -e --arg model "$configured_name" --arg manufacturer "$configured_manufacturer" --arg platform "$configured_platform" 'any(.modem_support[]; .[$model] != null and .[$model].manufacturer==$manufacturer and .[$model].platform==$platform)' "$SCRIPT_DIR/modem_support.json" >/dev/null; then
+  logger -t modem "模组身份未就绪，等待重新识别"
+  return 0
+ fi
+
+	if [ "$configured_manufacturer" = "tdtech" ] && /etc/init.d/sendat-cfun applicable; then
+		if [ -c /dev/modem-at ] && [ ! -e /tmp/sendat-cfun.finished ]; then
+			/etc/init.d/sendat-cfun start
+			waited=0
+			while [ ! -e /tmp/sendat-cfun.finished ] && [ "$waited" -lt 60 ]; do sleep 1; waited=$((waited + 1)); done
+		fi
+		if [ ! -e /tmp/sendat-cfun.ready ]; then
+			logger -t modem "MT5700 CFUN initialization incomplete; not publishing readiness"
+			return 1
+		fi
+	fi
+
+ # Only the currently published AT owner may consume the logical endpoint.
+ modem_no="${native_section#modem}"
+ case "$native_section:$modem_no" in modem*:*) ;; *) return 1 ;; esac
+ case "$modem_no" in ''|0[0-9]*|*[!0-9]*) return 1 ;; esac
+ network_interface="$(uci -q get modem.${native_section}.network_interface)"
+ modem_network="$(uci -q get modem.${native_section}.network)"
+ if [ -n "$network_interface" ] && [ -n "$modem_network" ]; then
+  /usr/libexec/modem/at --interface-plan "$network_interface" >/dev/null || return 1
+  ensure_default_dial_config "$modem_no" "$modem_network" || return 1
+ fi
+
+	# Read the committed profile transaction before enumerating dial sections.
+	config_load modem
+	#统计模组数量
+	modem_count=0
+	modem_count_invalid=0
+	config_foreach count_modem_number "modem-device"
+	[ "$modem_count_invalid" = "0" ] || { logger -t modem "invalid native modem section number"; return 1; }
+	#设置模组数量
+	uci set modem.@global[0].modem_number=${modem_count}
+	uci commit modem
+
+
+	local enable_dial=$(uci -q get modem.@global[0].enable_dial)
+    if m_mesh_data_suspended; then
+        # Keep configured dial profiles intact. Continue below to publish the
+        # AT/SMS/call owner, but start no alternate data dialer in Mesh mode.
+        logger -t modem 'Mesh agent: cellular data dialing suspended'
+    elif [ "$enable_dial" = "0" ]; then
+		stop_service
+	else
+		#删除拨号配置
+		del_dial_config || return 1
+		#加载拨号配置
+		MODEM_AT_EXPECTED_OWNER="$native_owner" config_foreach dial_checked "dial-config"
+		# Cold reconciliation may be the first successful discovery, with no
+		# usable early net event. Run the existing post-boot ownership handoff
+		# after procd has submitted these native instances as well.
+		[ -e /tmp/modem-boot-complete ] || touch /tmp/modem-boot-pending
+	fi
+	[ -c /dev/modem-at ] || return 1
+	echo "<6>BOOTMARK modem ready" > /dev/kmsg
+ local ready_owner
+ ready_owner="$(/usr/libexec/modem/at --owner)" || return 1
+ [ "$ready_owner" = "$native_owner" ] || { logger -t modem "Modem generation changed during startup; readiness not published"; return 1; }
+ mkdir -p "$MODEM_RUNDIR" || return 1
+ (umask 077; printf '%s\n' "$ready_owner" > "${MODEM_RUNDIR}/service-owner.new.$$") || return 1
+ mv "${MODEM_RUNDIR}/service-owner.new.$$" "${MODEM_RUNDIR}/service-owner.json" || return 1
+ touch /tmp/modem-service-ready
+ if ! ubus send modem.ready "$ready_owner"; then
+  rm -f /tmp/modem-service-ready
+  return 1
+ fi
+	# Same modem service and binary own passive events and serialized AT/SMS.
+	# There is no second AT port or independent init service.
+	procd_open_instance at-events
+	procd_set_param command /usr/libexec/modem/at --events-owner
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+	# START order cannot cover a modem discovered after WebUI's boot entry.
+	# Wake its existing service only after publishing the converted AT endpoint.
+	[ ! -x /etc/init.d/modemwebui ] || /etc/init.d/modemwebui start >/dev/null 2>&1 &
+
+	# Prewarm the complete overview snapshot after dialing/CFUN setup.  This is
+	# deliberately asynchronous and the cache helper serializes duplicate jobs.
+	(
+		prewarm_modem_info
+	) >/dev/null 2>&1 &
+}
+
+prewarm_modem_info()
+{
+ local owner section manufacturer platform define_connect
+ owner="$(/usr/libexec/modem/at --owner)" || return 1
+ section="$(printf '%s' "$owner" | jq -er '.section')" || return 1
+ case "$section" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
+ manufacturer="$(printf '%s' "$owner" | jq -r '.manufacturer')"
+ platform="$(printf '%s' "$owner" | jq -r '.platform')"
+ define_connect="$(uci -q get modem.${section}.define_connect)"
+ sh "${SCRIPT_DIR}/modem_info_cache.sh" /dev/modem-at "$manufacturer" "$platform" "$define_connect"
+}
+
+stop_service()
+{
+ local sections section number owner selected saved_mode mode=offline pdp_type=ipv4
+ sections="$(ubus call uci get '{"config":"modem"}' | jq -r '.values | to_entries[] | select(.value[".type"]=="modem-device") | .key')" || return 1
+ for section in $sections; do
+  case "$section" in modem*) ;; *) logger -t modem "Invalid native modem section; stop cleanup refused"; return 1 ;; esac
+  number="${section#modem}"
+  case "$number" in ''|0[0-9]*|*[!0-9]*) return 1 ;; esac
+  sync_ecm_ndp "$number" || return 1
+  rm -f "${MODEM_RUNDIR}/modem${number}.ipv6-generation"
+ done
+ owner="$(/usr/libexec/modem/at --owner 2>/dev/null)" || owner=""
+ if [ -n "$owner" ]; then
+  selected="$(printf '%s' "$owner" | jq -er '.section')" || return 1
+  local modem_no="${selected#modem}"
+  case "$selected:$modem_no" in modem*:*) ;; *) return 1 ;; esac
+  case "$modem_no" in ''|0[0-9]*|*[!0-9]*) return 1 ;; esac
+  saved_mode="$(uci -q get modem.${selected}.mode)"
+  case "$saved_mode" in ecm|rndis|ncm) stop_ecm || return 1 ;; esac
+  suspend_modem "$modem_no" || return 1
+ fi
+ # procd retires this service's remaining processes. Never kill another
+ # service's dialer by executable name or a guessed logical interface.
+ rm -f /tmp/modem-service-ready "${MODEM_RUNDIR}/service-owner.json"
+ rm -f "$MODEM_RUN_CONFIG"
+}

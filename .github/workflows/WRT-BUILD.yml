@@ -18,6 +18,7 @@ on:
           - H5000M-qmodem-next
           - H5000M-qmodem
           - H5000M-modem-pro
+          - H5000M-higowebui
           - AP3000M-qmodem-next
           - AP3000M-qmodem
           - AP3000M-modem-pro

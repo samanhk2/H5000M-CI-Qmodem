@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+USE_PROCD=1
+START=95
+STOP=10
+start_service() {
+ command -v openssl >/dev/null || return 0
+ command -v haproxy >/dev/null || return 0
+ local events=/var/run/modemwebui/certificate-events
+ mkdir -m 0700 -p "$events" || return 1
+ (umask 077; cat /proc/sys/kernel/random/uuid > "$events/epoch.new.$$") || return 1
+ mv "$events/epoch.new.$$" "$events/epoch" || return 1
+ procd_open_instance
+ procd_set_param command /usr/bin/modemwebui-server --certificate-maintenance
+ procd_set_param term_timeout 45
+ procd_set_param respawn 3600 5 5
+ procd_set_param stdout 1
+ procd_set_param stderr 1
+ procd_close_instance
+}
+reload_service() { start; }
+service_triggers() {
+ local role
+ procd_add_reload_trigger network easymesh
+ # Port-role metadata selects the actual management interface. A DHCP lease
+ # or address event must refresh certificates without restarting modem/AT.
+ role="$(ubus call uci get '{"config":"easymesh"}' | jq -er '[.values[] | select(.[".type"]=="device") | .lan_network] | if length==1 then .[0] else error("management role missing or ambiguous") end')" || return 0
+ case "$role" in ''|*[!A-Za-z0-9_]*) return 0 ;; esac
+ procd_add_interface_trigger 'interface.*' "$role" /etc/init.d/modemwebui-cert start
+}

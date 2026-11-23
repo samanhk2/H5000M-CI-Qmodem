@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "quectel-CM",
+      "modes": [
+        "qmi",
+        "gobinet",
+        "mbim"
+      ],
+      "executables": [
+        "usr/bin/quectel-CM"
+      ]
+    },
+    {
+      "name": "mmcli",
+      "modes": [
+        "qmi",
+        "gobinet",
+        "mbim"
+      ],
+      "executables": [
+        "usr/bin/mmcli",
+        "usr/sbin/ModemManager",
+        "lib/netifd/proto/modemmanager.sh"
+      ]
+    }
+  ]
+}

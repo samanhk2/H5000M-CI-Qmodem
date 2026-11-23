@@ -174,7 +174,7 @@ FIX_QMODEM_VERSION() {
 # 已将它们设为 n，但克隆与 feed 注册仍会污染包索引、增加扫描时间，并可能在
 # 上游依赖变化时被意外选中（例如 qmodem-generic 的 DEPENDS:=+qmodem）。
 # 因此在源头按配置隔离，Modem Pro 构建完全不接触 QModem 仓库。
-if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
+if [[ "${WRT_CONFIG:-}" != *modem-pro && "${WRT_CONFIG:-}" != *higowebui* ]]; then
 	# 所有 QModem 变体共用核心脚本包；前端由 QMODEM*.txt 选择
 	UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 	REGISTER_QMODEM_FEED
@@ -245,6 +245,20 @@ MAKEFILE_EOF
 	UPDATE_PACKAGE "luci-app-qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
 else
 	echo "modem-pro: 跳过 QModem 克隆、feed 注册与 luci-app-qmodem-generic（隔离 QModem 依赖链）"
+fi
+
+# ===== higo2-modem：从用户提供的 Higo2 H5000M 固件移植的模组管理栈 + WebUI =====
+# 以本地包方式注入（package/higo2-modem），包含 modem 管理脚本、modemwebui-server、
+# /www/webui 前端、LuCI 应用与开机自启。仅 *-higowebui 配置引入。
+if [[ "${WRT_CONFIG:-}" == *higowebui* ]]; then
+	HIGO2_PORT_DIR="$GITHUB_WORKSPACE/higo2-port"
+	if [ ! -f "$HIGO2_PORT_DIR/Makefile" ]; then
+		echo "::error title=higo2-port missing::higo2-port/Makefile 不存在，构建中止"
+		return 1
+	fi
+	mkdir -p package/higo2-modem
+	cp -rf "$HIGO2_PORT_DIR"/. package/higo2-modem/
+	echo "higo2-modem 包已注入 package/higo2-modem"
 fi
 
 # ===== modem-pro-unified：单一包 modem-pro（H5000M / AP3000M 共用，替代 QModem 模组管理）=====

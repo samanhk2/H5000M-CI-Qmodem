@@ -1,0 +1,274 @@
+{
+    "quick_commands": {
+        "general": [
+            {
+                "模组信息 > ATI": "ATI"
+            },
+            {
+                "查询SIM卡状态 > AT+CPIN?": "AT+CPIN?"
+            },
+            {
+                "查询信号强度 > AT+CSQ": "AT+CSQ"
+            },
+            {
+                "查询扩展信号质量 > AT+CESQ": "AT+CESQ"
+            },
+            {
+                "查询网络信息 > AT+COPS?": "AT+COPS?"
+            },
+            {
+                "查询 PDP 上下文 > AT+CGDCONT?": "AT+CGDCONT?"
+            },
+            {
+                "查询 PDP 地址 > AT+CGPADDR": "AT+CGPADDR"
+            },
+            {
+                "查询模组IMEI > AT+CGSN": "AT+CGSN"
+            },
+            {
+                "查询模组IMEI > AT+GSN": "AT+GSN"
+            },
+            {
+                "查看当前电压 > AT+CBC": "AT+CBC"
+            },
+            {
+                "最小功能模式 > AT+CFUN=0": "AT+CFUN=0"
+            },
+            {
+                "全功能模式 > AT+CFUN=1": "AT+CFUN=1"
+            },
+            {
+                "重启模组 > AT+CFUN=1,1": "AT+CFUN=1,1"
+            }
+        ],
+        "quectel": {
+            "qualcomm": [
+                {
+                    "查询 SIM 卡槽 > AT+QUIMSLOT?": "AT+QUIMSLOT?"
+                },
+                {
+                    "切换至 SIM 1 > AT+QUIMSLOT=1": "AT+QUIMSLOT=1"
+                },
+                {
+                    "切换至 SIM 2 > AT+QUIMSLOT=2": "AT+QUIMSLOT=2"
+                },
+                {
+                    "查询网络信息 > AT+QNWINFO": "AT+QNWINFO"
+                },
+                {
+                    "查询载波聚合参数 > AT+QCAINFO": "AT+QCAINFO"
+                },
+                {
+                    "查询当前拨号模式 > AT+QCFG=\"usbnet\"": "AT+QCFG=\"usbnet\""
+                },
+                {
+                    "QMI/GobiNet拨号模式 > AT+QCFG=\"usbnet\",0": "AT+QCFG=\"usbnet\",0"
+                },
+                {
+                    "ECM拨号模式 > AT+QCFG=\"usbnet\",1": "AT+QCFG=\"usbnet\",1"
+                },
+                {
+                    "MBIM拨号模式 > AT+QCFG=\"usbnet\",2": "AT+QCFG=\"usbnet\",2"
+                },
+                {
+                    "RNDIS拨号模式 > AT+QCFG=\"usbnet\",3": "AT+QCFG=\"usbnet\",3"
+                },
+                {
+                    "NCM拨号模式 > AT+QCFG=\"usbnet\",5": "AT+QCFG=\"usbnet\",5"
+                },
+                {
+                    "解除 NR 小区锁定 > AT+QNWLOCK=\"common/5g\"": "AT+QNWLOCK=\"common/5g\",0"
+                },
+                {
+                    "锁5G > AT+QNWPREFCFG=\"mode_pref\",NR5G": "AT+QNWPREFCFG=\"mode_pref\",NR5G"
+                },
+                {
+                    "锁5G 频段41、78、79 > AT+QNWPREFCFG=\"nr5g_band\"": "AT+QNWPREFCFG=\"nr5g_band\",41:78:79"
+                },
+                {
+                    "恢复自动搜索网络 > AT+QNWPREFCFG=\"mode_pref\",AUTO": "AT+QNWPREFCFG=\"mode_pref\",AUTO"
+                },
+                {
+                    "查询模组IMEI > AT+EGMR=0,7": "AT+EGMR=0,7"
+                },
+                {
+                    "获取模组温度 > AT+QTEMP": "AT+QTEMP"
+                },
+                {
+                    "查看当前通信端口 > AT+QCFG=\"data_interface\"": "AT+QCFG=\"data_interface\""
+                },
+                {
+                    "切换为USB通信端口 > AT+QCFG=\"data_interface\",0,0": "AT+QCFG=\"data_interface\",0,0"
+                },
+                {
+                    "切换为PCIE通信端口 > AT+QCFG=\"data_interface\",1,0": "AT+QCFG=\"data_interface\",1,0"
+                },
+                {
+                    "查看当前USB速率 > AT+QCFG=\"usbspeed\"": "AT+QCFG=\"usbspeed\""
+                },
+                {
+                    "切换为USB3.1 Gen1（5Gbps） > AT+QCFG=\"usbspeed\",\"311\"": "AT+QCFG=\"usbspeed\",\"311\""
+                },
+                {
+                    "切换为USB3.1 Gen2（10Gbps） > AT+QCFG=\"usbspeed\",\"312\"": "AT+QCFG=\"usbspeed\",\"312\""
+                },
+                {
+                    "重置模组 > AT+QCFG=\"ResetFactory\"": "AT+QCFG=\"ResetFactory\""
+                }
+            ],
+            "unisoc": [
+                {
+                    "SIM卡状态上报 > AT+QSIMSTAT?": "AT+QSIMSTAT?"
+                },
+                {
+                    "设置当前使用的为卡1 > AT+QUIMSLOT=1": "AT+QUIMSLOT=1"
+                },
+                {
+                    "设置当前使用的为卡2 > AT+QUIMSLOT=2": "AT+QUIMSLOT=2"
+                },
+                {
+                    "查询网络信息 > AT+QNWINFO": "AT+QNWINFO"
+                },
+                {
+                    "查询载波聚合参数 > AT+QCAINFO": "AT+QCAINFO"
+                },
+                {
+                    "查询当前拨号模式 > AT+QCFG=\"usbnet\"": "AT+QCFG=\"usbnet\""
+                },
+                {
+                    "ECM拨号模式 > AT+QCFG=\"usbnet\",1": "AT+QCFG=\"usbnet\",1"
+                },
+                {
+                    "MBIM拨号模式 > AT+QCFG=\"usbnet\",2": "AT+QCFG=\"usbnet\",2"
+                },
+                {
+                    "RNDIS拨号模式 > AT+QCFG=\"usbnet\",3": "AT+QCFG=\"usbnet\",3"
+                },
+                {
+                    "NCM拨号模式 > AT+QCFG=\"usbnet\",5": "AT+QCFG=\"usbnet\",5"
+                },
+                {
+                    "锁4G > AT+QNWPREFCFG=\"mode_pref\",LTE": "AT+QNWPREFCFG=\"mode_pref\",LTE"
+                },
+                {
+                    "锁5G > AT+QNWPREFCFG=\"mode_pref\",NR5G": "AT+QNWPREFCFG=\"mode_pref\",NR5G"
+                },
+                {
+                    "锁5G NSA > AT+QNWPREFCFG=\"mode_pref\",NR5G-NSA": "AT+QNWPREFCFG=\"mode_pref\",NR5G-NSA"
+                },
+                {
+                    "锁5G SA > AT+QNWPREFCFG=\"mode_pref\",NR5G-SA": "AT+QNWPREFCFG=\"mode_pref\",NR5G-SA"
+                },
+                {
+                    "恢复自动搜索网络 > AT+QNWPREFCFG=\"mode_pref\",AUTO": "AT+QNWPREFCFG=\"mode_pref\",AUTO"
+                },
+                {
+                    "查询模组IMEI > AT+EGMR=0,7": "AT+EGMR=0,7"
+                },
+                {
+                    "获取模组温度 > AT+QTEMP": "AT+QTEMP"
+                },
+                {
+                    "切换为USB通信端口 > AT+QCFG=\"data_interface\",0,0": "AT+QCFG=\"data_interface\",0,0"
+                },
+                {
+                    "切换为PCIE通信端口 > AT+QCFG=\"data_interface\",1,0": "AT+QCFG=\"data_interface\",1,0"
+                },
+                {
+                    "查看当前USB速率 > AT+QCFG=\"usbspeed\"": "AT+QCFG=\"usbspeed\""
+                },
+                {
+                    "切换为USB2.0 > AT+QCFG=\"usbspeed\",\"20\"": "AT+QCFG=\"usbspeed\",\"20\""
+                },
+                {
+                    "切换为USB3.1 Gen1（5Gbps） > AT+QCFG=\"usbspeed\",\"311\"": "AT+QCFG=\"usbspeed\",\"311\""
+                },
+                {
+                    "切换为USB3.1 Gen2（10Gbps） > AT+QCFG=\"usbspeed\",\"312\"": "AT+QCFG=\"usbspeed\",\"312\""
+                },
+                {
+                    "重置模组 > AT+QCFG=\"ResetFactory\"": "AT+QCFG=\"ResetFactory\""
+                }
+            ]
+        },
+        "tdtech": {
+            "hisilicon": [
+                {
+                    "获取SIM卡卡槽状态 > AT^HVSST?": "AT^HVSST?"
+                },
+                {
+                    "获取模组软件版本状态 > AT^VERSION?": "AT^VERSION?"
+                },
+                {
+                    "设置当前使用的为卡1 > AT^SCICHG=0,1": "AT^SCICHG=0,1"
+                },
+                {
+                    "设置当前使用的为卡2 > AT^SCICHG=1,0": "AT^SCICHG=1,0"
+                },
+                {
+                    "模组禁用自动拨号 > AT^SETAUTODIAL=0": "AT^SETAUTODIAL=0"
+                },
+                {
+                    "模组USB模式自动拨号 > AT^SETAUTODIAL=1,1": "AT^SETAUTODIAL=1,1"
+                },
+                {
+                    "开启stick拨号模式（USB） > AT^SETE5STICK=0": "AT^SETE5STICK=0"
+                },
+                {
+                    "模组PCIE模式自动拨号 > AT^SETAUTODIAL=1,2": "AT^SETAUTODIAL=1,2"
+                },
+                {
+                    "开启PCIE控制电源 > AT^TDPMCFG=1,0,0,0": "AT^TDPMCFG=1,0,0,0"
+                },
+                {
+                    "关闭PCIE控制电源 > AT^TDPMCFG=0,0,0,0": "AT^TDPMCFG=0,0,0,0"
+                },
+                {
+                    "开启8125b网口2，8111网口是1 > AT^TDPCIELANCFG=2": "AT^TDPCIELANCFG=2"
+                },
+                {
+                    "查询网络信息 > AT^HFREQINFO?": "AT^HFREQINFO?"
+                },
+                {
+                    "查询当前拨号模式 > AT^SETMODE?": "AT^SETMODE?"
+                },
+                {
+                    "ECM拨号模式（Linux） > AT^SETMODE=0": "AT^SETMODE=0"
+                },
+                {
+                    "NCM拨号模式（Linux） > AT^SETMODE=4": "AT^SETMODE=4"
+                },
+                {
+                    "查询锁频网络信息 > AT^NRFREQLOCK?": "AT^NRFREQLOCK?"
+                },
+                {
+                    "锁定5G频段 > AT^NRFREQLOCK": "AT^NRFREQLOCK=3,0,3,\"41,78,79\""
+                },
+                {
+                    "锁定5G小区后软关机生效": "AT+CFUN=0"
+                },
+                {
+                    "锁定5G小区后软开机生效": "AT+CFUN=1"
+                },
+                {
+                    "解除锁定5G频段 > AT^NRFREQLOCK=0": "AT^NRFREQLOCK=0"
+                },
+                {
+                    "锁4G > AT^SYSCFGEX=\"03\",40000000,1,2,7FFFFFFFFFFFFFFF,,": "AT^SYSCFGEX=\"03\",40000000,1,2,7FFFFFFFFFFFFFFF,,"
+                },
+                {
+                    "锁5G > AT^SYSCFGEX=\"08\",40000000,1,2,7FFFFFFFFFFFFFFF,,": "AT^SYSCFGEX=\"08\",40000000,1,2,7FFFFFFFFFFFFFFF,,"
+                },
+                {
+                    "恢复自动搜索网络 > AT^SYSCFGEX=\"080302\",3FFFFFFF,1,2,7FFFFFFFFFFFFFFF,,": "AT^SYSCFGEX=\"080302\",3FFFFFFF,1,2,7FFFFFFFFFFFFFFF,,"
+                },
+                {
+                    "获取模组温度 > AT^CHIPTEMP?": "AT^CHIPTEMP?"
+                },
+                {
+                    "重启模组 > AT^RESET": "AT^RESET"
+                }
+            ]
+        }
+    }
+}

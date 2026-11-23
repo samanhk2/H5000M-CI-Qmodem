@@ -257,6 +257,9 @@ jobs:
             *-qmodem)
               echo "WRT_VARIANT=qmodem" >> $GITHUB_ENV
               ;;
+            *-higowebui)
+              echo "WRT_VARIANT=higowebui" >> $GITHUB_ENV
+              ;;
             *)
               echo "WRT_VARIANT=qmodem-next" >> $GITHUB_ENV
               ;;
@@ -496,6 +499,7 @@ jobs:
           case "$WRT_VARIANT" in
             qmodem)    VARIANT_FILE="$GITHUB_WORKSPACE/Config/QMODEM.txt" ;;
             modem-pro) VARIANT_FILE="$GITHUB_WORKSPACE/Config/MODEM-PRO.txt" ;;
+            higowebui) VARIANT_FILE="$GITHUB_WORKSPACE/Config/HIGO2.txt" ;;
             *)         VARIANT_FILE="$GITHUB_WORKSPACE/Config/QMODEM-NEXT.txt" ;;
           esac
 

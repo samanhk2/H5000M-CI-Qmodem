@@ -1,0 +1,8 @@
+#!/bin/sh
+# First-boot enable of the Higo2 modem stack services.
+for s in modem modeminit modem-overview modemwebui modemwebui-cert modemwebui-https; do
+	[ -x "/etc/init.d/$s" ] && "/etc/init.d/$s" enable 2>/dev/null
+done
+# Try to bring the modem manager up immediately after the package install.
+[ -x /etc/init.d/modem ] && /etc/init.d/modem restart 2>/dev/null
+exit 0

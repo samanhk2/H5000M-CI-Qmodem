@@ -1,0 +1,10 @@
+{
+	"admin/cellular": {
+		"title": "蜂窝",
+		"order": 25,
+		"action": {
+			"type": "firstchild",
+			"recurse": true
+		}
+	}
+}
