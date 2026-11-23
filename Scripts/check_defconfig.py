@@ -209,7 +209,7 @@ def main():
     parser = argparse.ArgumentParser(description="Validate defconfig result for this repository")
     parser.add_argument("--config", required=True, help="defconfig 之后的 .config")
     parser.add_argument("--requested", required=True, help="defconfig 之前合并出的 .config")
-    parser.add_argument("--variant", required=True, choices=["qmodem", "qmodem-next", "modem-pro"])
+    parser.add_argument("--variant", required=True, choices=["qmodem", "qmodem-next", "modem-pro", "higowebui"])
     parser.add_argument("--name", required=True, help="配置名，如 H5000M-qmodem-next")
     args = parser.parse_args()
 
