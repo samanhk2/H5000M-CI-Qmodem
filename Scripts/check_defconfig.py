@@ -106,6 +106,7 @@ class Checker:
             ("CONFIG_PACKAGE_qmodem", "QModem 核心包"),
             ("CONFIG_PACKAGE_qmodem_INCLUDE_generic-qmi-wwan", "必须选择通用 QMI 驱动"),
             ("CONFIG_PACKAGE_qmodem_INCLUDE_SEAL", "上游默认启用 SEAL，显式固定"),
+            ("CONFIG_PACKAGE_qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM", "拨号 CM 选择"),
             ("CONFIG_PACKAGE_kmod-usb-net-qmi-wwan", "通用 QMI WWAN 驱动"),
             ("CONFIG_PACKAGE_kmod-usb-acm", "QModem 硬依赖"),
             ("CONFIG_PACKAGE_kmod-usb-serial-qualcomm", "QModem 硬依赖"),
@@ -115,13 +116,11 @@ class Checker:
             ("CONFIG_PACKAGE_ubus-at-daemon", "QModem AT ubus 守护进程"),
             ("CONFIG_PACKAGE_sms-tool", "短信工具"),
             ("CONFIG_PACKAGE_sms-tool_q", "QModem 短信工具"),
-            ("CONFIG_PACKAGE_quectel-cm-stock", "原版 Quectel CM（RM502Q-AE 兼容）"),
+            ("CONFIG_PACKAGE_quectel-CM-5G-M", "Tom 定制 Quectel CM"),
             ("CONFIG_PACKAGE_luci-app-qmodem-generic", "通用 QModem 管理界面"),
         ]
         for symbol, reason in common:
             self.require(symbol, reason)
-        self.forbid("CONFIG_PACKAGE_quectel-CM-5G-M", "Tom 定制 CM 在 RM502Q-AE 上被网络拒绝，必须使用原版 quectel-cm-stock")
-
 
         # 厂商 QMI 驱动与通用驱动提供同名 qmi_wwan.ko，不能同时进固件
         for symbol in (

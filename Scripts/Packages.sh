@@ -198,6 +198,15 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 		return 1
 	}
 
+	# 0002：优先使用原版 quectel-CM（RM502Q-AE 兼容），Tom 定制版仅在原版缺失时回退。
+	QMODEM_PATCH_0002="$GITHUB_WORKSPACE/Scripts/patches/qmodem/0002-prefer-stock-quectel-cm.patch"
+	if [ -f "$QMODEM_PATCH_0002" ]; then
+		( cd ../QModem && patch -p1 -N < "$QMODEM_PATCH_0002" ) || {
+			echo "::error title=QModem patch failed::0002 原版拨号器优先补丁应用失败，构建中止"
+			return 1
+		}
+	fi
+
 	# 原版 Quectel QConnectManager V1.6.4（二进制来自用户提供的 Higo2 H5000M 可用固件）：
 	# Tom 定制版 quectel-CM-5G-M 的 Start Network 请求在 RM502Q-AE(A13A04M4G)+联通网络下
 	# 被拒（call_end_reason_verbose=231），而原版拨号器实测可用。以本地包方式装入

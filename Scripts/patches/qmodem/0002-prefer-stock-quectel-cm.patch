@@ -1,0 +1,30 @@
+diff --git a/application/qmodem/files/usr/share/qmodem/modem_dial.sh b/application/qmodem/files/usr/share/qmodem/modem_dial.sh
+index 307b6ca..482ace4 100755
+--- a/application/qmodem/files/usr/share/qmodem/modem_dial.sh
++++ b/application/qmodem/files/usr/share/qmodem/modem_dial.sh
+@@ -1215,8 +1215,14 @@ mhi_dial()
+ 
+ qmi_dial()
+ {
+-    cmd_line="quectel-CM"
+-    [ -e "/usr/bin/quectel-CM-M" ] && cmd_line="quectel-CM-M" && tom_modified=1
++    cmd_line="quectel-CM-M"
++    tom_modified=1
++    # 原版 QConnectManager 对 RM502Q-AE 兼容性更好，优先使用；原版存在时切回原版
++    # 并关闭 fork 参数（-M/-d/-E/-F）。
++    if [ -e "/usr/bin/quectel-CM" ]; then
++        cmd_line="quectel-CM"
++        tom_modified=0
++    fi
+     case $pdp_type in
+         "ip") cmd_line="$cmd_line -4" ;;
+         "ipv6") cmd_line="$cmd_line -6" ;;
+@@ -1260,7 +1266,7 @@ qmi_dial()
+     if [ "$do_not_add_dns" = "1" ];then
+         cmd_line="${cmd_line} -D"
+     fi
+-    if [ -e "/usr/bin/quectel-CM-M" ];then
++    if [ "$tom_modified" = "1" ];then
+         [ -n "$metric" ] && cmd_line="$cmd_line -d -M $metric"
+         [ "$managed_ipv4" = 1 ] && cmd_line="$cmd_line -E"
+         [ "$force_set_apn" == "1" ] && cmd_line="$cmd_line -F"
