@@ -198,6 +198,49 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 		return 1
 	}
 
+	# 原版 Quectel QConnectManager V1.6.4（二进制来自用户提供的 Higo2 H5000M 可用固件）：
+	# Tom 定制版 quectel-CM-5G-M 的 Start Network 请求在 RM502Q-AE(A13A04M4G)+联通网络下
+	# 被拒（call_end_reason_verbose=231），而原版拨号器实测可用。以本地包方式装入
+	# /usr/bin/quectel-CM；QModem 的 qmi_dial 在 quectel-CM-M 缺失时自动走原版分支
+	# （不带 -M/-d/-E/-F 等 fork 参数）。二进制缺失时中止构建，避免产出无法拨号的固件。
+	QUECTEL_CM_BIN="$GITHUB_WORKSPACE/assets/quectel-CM"
+	if [ ! -f "$QUECTEL_CM_BIN" ]; then
+		echo "::error title=stock quectel-CM missing::assets/quectel-CM 不存在，构建中止"
+		return 1
+	fi
+	mkdir -p package/quectel-cm-stock
+	cp -f "$QUECTEL_CM_BIN" package/quectel-cm-stock/quectel-CM
+	cat > package/quectel-cm-stock/Makefile <<'MAKEFILE_EOF'
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=quectel-cm-stock
+PKG_VERSION:=1.6.4
+PKG_RELEASE:=1
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/quectel-cm-stock
+  SECTION:=utils
+  CATEGORY:=Utilities
+  TITLE:=Quectel QConnectManager stock dialer (RM502Q-AE compatible)
+endef
+
+define Build/Prepare
+	$(CP) $(CURDIR)/quectel-CM $(PKG_BUILD_DIR)/
+endef
+
+define Build/Compile
+endef
+
+define Package/quectel-cm-stock/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/quectel-CM $(1)/usr/bin/quectel-CM
+endef
+
+$(eval $(call BuildPackage,quectel-cm-stock))
+MAKEFILE_EOF
+	echo "stock quectel-CM 包已注入 package/quectel-cm-stock"
+
 	# 通用 QModem 管理界面（依赖 qmodem 核心），Modem Pro 配置不编入
 	UPDATE_PACKAGE "luci-app-qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
 else
