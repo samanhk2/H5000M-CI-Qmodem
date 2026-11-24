@@ -208,14 +208,25 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 	fi
 
 	# 0003：原版拨号时接口 proto=none，避免 netifd 的 dhcp 与原版 CM 自带的 udhcpc
-	# 竞争 wwan0（开机首次拨号拿不到稳定地址、需手动重拨）。
-	QMODEM_PATCH_0003="$GITHUB_WORKSPACE/Scripts/patches/qmodem/0003-stock-cm-interface-none.patch"
-	if [ -f "$QMODEM_PATCH_0003" ]; then
-		( cd ../QModem && patch -p1 -N < "$QMODEM_PATCH_0003" ) || {
-			echo "::error title=QModem patch failed::0003 接口 proto=none 补丁应用失败，构建中止"
-			return 1
-		}
-	fi
+	# 竞争 wwan0（开机首次拨号拿不到稳定地址、需手动重拨）。用 python 文本插入而非
+	# .patch，避免上游 modem_dial.sh 微调导致补丁上下文失配。
+	python3 - <<'PYEOF'
+import io
+p = '../QModem/application/qmodem/files/usr/share/qmodem/modem_dial.sh'
+s = io.open(p, encoding='utf-8').read()
+old = '        proto="qmodem_runtime"\n    fi\n    if [ "$bridge_enabled" = "1" ]; then'
+new = ('        proto="qmodem_runtime"\n    fi\n'
+       '    # 原版 QConnectManager（非 Tom 定制版）自行用 udhcpc 管理地址与路由；\n'
+       '    # netifd 若同时用 dhcp 会竞争 wwan0，开机首次拨号不稳。原版拨号时接口设为 none。\n'
+       '    if [ "$driver" = "qmi" ] && [ -e "/usr/bin/quectel-CM" ]; then\n'
+       '        proto="none"\n'
+       '        protov6="none"\n'
+       '    fi\n'
+       '    if [ "$bridge_enabled" = "1" ]; then')
+assert s.count(old) == 1, "0003 anchor not unique: %d" % s.count(old)
+io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+print("0003 (proto=none) injected")
+PYEOF
 
 	# 原版 Quectel QConnectManager V1.6.4（二进制来自用户提供的 Higo2 H5000M 可用固件）：
 	# Tom 定制版 quectel-CM-5G-M 的 Start Network 请求在 RM502Q-AE(A13A04M4G)+联通网络下
