@@ -2,10 +2,17 @@
 # H5000M：关闭 fullcone 与硬件流卸载。
 # 在 6.18 内核 + MT7987 上，fullcone 的 nft 规则注入会报 "Invalid argument"
 # 导致 firewall reload 失败、MASQ 规则不加载；硬件流卸载则会造成转发丢包。
-# 首次启动默认关闭，确保 WAN 的 MASQ 正常生效、LAN 客户端可上网。
 uci -q set firewall.@defaults[0].fullcone='0'
 uci -q set firewall.@defaults[0].fullcone6='0'
 uci -q set firewall.@defaults[0].flow_offloading='0'
 uci -q set firewall.@defaults[0].flow_offloading_hw='0'
 uci commit firewall
+
+# 原版 QConnectManager 自行管理地址时 netifd 不接管 DNS，
+# 给 dnsmasq 一个稳定的公共 DNS 上游，避免 LAN 客户端无法解析域名。
+if ! uci -q get dhcp.@dnsmasq[0].server >/dev/null 2>&1; then
+	uci -q add_list dhcp.@dnsmasq[0].server='223.5.5.5'
+	uci -q add_list dhcp.@dnsmasq[0].server='119.29.29.29'
+	uci commit dhcp
+fi
 exit 0

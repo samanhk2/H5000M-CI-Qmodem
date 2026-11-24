@@ -1,0 +1,18 @@
+diff --git a/application/qmodem/files/usr/share/qmodem/modem_dial.sh b/application/qmodem/files/usr/share/qmodem/modem_dial.sh
+index 307b6ca..0000000 100755
+--- a/application/qmodem/files/usr/share/qmodem/modem_dial.sh
++++ b/application/qmodem/files/usr/share/qmodem/modem_dial.sh
+@@ -781,6 +781,13 @@ set_if()
+     if [ "$bridge_enabled" != "1" ] && [ "$managed_ipv4" = 1 ]; then
+         proto="qmodem_runtime"
+     fi
++    # 原版 QConnectManager（非 Tom 定制版）会自行用 udhcpc 管理 IPv4/IPv6 地址与路由。
++    # 若 netifd 同时用 dhcp 接管同一接口，两个 udhcpc 竞争 wwan0，开机首次拨号常拿不到
++    # 稳定地址（需手动重拨才恢复）。原版拨号时把接口设为 none，由 CM 全权管理。
++    if [ "$driver" = "qmi" ] && [ -e "/usr/bin/quectel-CM" ]; then
++        proto="none"
++        protov6="none"
++    fi
+     if [ "$bridge_enabled" = "1" ]; then
+         proto="none"
+         protov6="none"

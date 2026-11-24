@@ -207,6 +207,16 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 		}
 	fi
 
+	# 0003：原版拨号时接口 proto=none，避免 netifd 的 dhcp 与原版 CM 自带的 udhcpc
+	# 竞争 wwan0（开机首次拨号拿不到稳定地址、需手动重拨）。
+	QMODEM_PATCH_0003="$GITHUB_WORKSPACE/Scripts/patches/qmodem/0003-stock-cm-interface-none.patch"
+	if [ -f "$QMODEM_PATCH_0003" ]; then
+		( cd ../QModem && patch -p1 -N < "$QMODEM_PATCH_0003" ) || {
+			echo "::error title=QModem patch failed::0003 接口 proto=none 补丁应用失败，构建中止"
+			return 1
+		}
+	fi
+
 	# 原版 Quectel QConnectManager V1.6.4（二进制来自用户提供的 Higo2 H5000M 可用固件）：
 	# Tom 定制版 quectel-CM-5G-M 的 Start Network 请求在 RM502Q-AE(A13A04M4G)+联通网络下
 	# 被拒（call_end_reason_verbose=231），而原版拨号器实测可用。以本地包方式装入
@@ -219,12 +229,14 @@ if [[ "${WRT_CONFIG:-}" != *modem-pro ]]; then
 	fi
 	mkdir -p package/quectel-cm-stock
 	cp -f "$QUECTEL_CM_BIN" package/quectel-cm-stock/quectel-CM
-	# 首次启动关闭 fullcone / 硬件流卸载（6.18 内核上会导致防火墙 nft 注入失败、NAT 失效）
+	# 首次启动关闭 fullcone / 硬件流卸载（6.18 内核上会导致防火墙 nft 注入失败、NAT 失效），
+	# 并补公共 DNS 上游。放进 quectel-cm-stock 包一起打进镜像（files/ 覆盖层在此流程不可靠）。
 	FW_FIX="$GITHUB_WORKSPACE/Scripts/files/99-h5000m-firewall-fix"
 	if [ -f "$FW_FIX" ]; then
-		mkdir -p files/etc/uci-defaults
-		cp -f "$FW_FIX" files/etc/uci-defaults/99-h5000m-firewall-fix
-		chmod +x files/etc/uci-defaults/99-h5000m-firewall-fix
+		cp -f "$FW_FIX" package/quectel-cm-stock/99-h5000m-firewall-fix
+	else
+		echo "::error title=firewall fix missing::Scripts/files/99-h5000m-firewall-fix 不存在，构建中止"
+		return 1
 	fi
 	cat > package/quectel-cm-stock/Makefile <<'MAKEFILE_EOF'
 include $(TOPDIR)/rules.mk
@@ -243,14 +255,16 @@ endef
 
 define Build/Prepare
 	$(CP) $(CURDIR)/quectel-CM $(PKG_BUILD_DIR)/
+	$(CP) $(CURDIR)/99-h5000m-firewall-fix $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
 endef
 
 define Package/quectel-cm-stock/install
-	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_DIR) $(1)/usr/bin $(1)/etc/uci-defaults
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/quectel-CM $(1)/usr/bin/quectel-CM
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/99-h5000m-firewall-fix $(1)/etc/uci-defaults/99-h5000m-firewall-fix
 endef
 
 $(eval $(call BuildPackage,quectel-cm-stock))
